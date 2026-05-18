@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::Value;
+use url::Url;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Software {
@@ -33,7 +34,7 @@ impl CatalogClient {
 
     pub async fn list_software(&self) -> Result<Vec<Software>> {
         let mut out = Vec::new();
-        let mut url = format!("{}/v1/software?page[size]=100", self.base);
+        let mut url = format!("{}/software?page[size]=100", self.base);
         loop {
             let resp = self.client.get(&url).send().await?;
             if !resp.status().is_success() {
@@ -47,11 +48,10 @@ impl CatalogClient {
             }
             match page["links"]["next"].as_str() {
                 Some(next) if !next.is_empty() => {
-                    url = if next.starts_with("http") {
-                        next.to_string()
-                    } else {
-                        format!("{}{}", self.base, next)
-                    };
+                    url = Url::parse(&self.base)
+                        .and_then(|b| b.join(next))
+                        .map(|u| u.to_string())
+                        .map_err(|e| anyhow!("bad next link: {e}"))?;
                 }
                 _ => break,
             }
@@ -62,7 +62,7 @@ impl CatalogClient {
     pub async fn resolve_root_catalog_id(&self) -> Result<String> {
         let resp = self
             .client
-            .get(format!("{}/v1/catalogs?all=true", self.base))
+            .get(format!("{}/catalogs?all=true", self.base))
             .send()
             .await?;
         let page: Value = resp.json().await?;
@@ -79,12 +79,12 @@ impl CatalogClient {
     }
 
     pub async fn patch_software_analysis(&self, id: &str, body: &Value) -> Result<()> {
-        self.patch(&format!("{}/v1/software/{}/analysis", self.base, id), body)
+        self.patch(&format!("{}/software/{}/analysis", self.base, id), body)
             .await
     }
 
     pub async fn patch_catalog_analysis(&self, id: &str, body: &Value) -> Result<()> {
-        self.patch(&format!("{}/v1/catalogs/{}/analysis", self.base, id), body)
+        self.patch(&format!("{}/catalogs/{}/analysis", self.base, id), body)
             .await
     }
 

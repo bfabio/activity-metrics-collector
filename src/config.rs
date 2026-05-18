@@ -3,10 +3,10 @@ use clap::Parser;
 #[derive(Parser, Debug, Clone)]
 #[command(name = "activity-metrics-collector")]
 pub struct Config {
-    #[arg(long, env = "API_BASE_URL")]
+    #[arg(long, env = "SOFTWARE_CATALOG_API_BASE_URL")]
     pub api_base_url: String,
 
-    #[arg(long, env = "API_TOKEN")]
+    #[arg(long, env = "SOFTWARE_CATALOG_API_BEARER_TOKEN")]
     pub api_token: String,
 
     #[arg(long, env = "GITHUB_TOKEN")]
