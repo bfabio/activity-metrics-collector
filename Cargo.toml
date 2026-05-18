@@ -1,0 +1,17 @@
+[package]
+name = "activity-metrics-collector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+time = { version = "0.3", features = ["macros", "parsing", "formatting"] }
+anyhow = "1"
+futures = "0.3"
+async-trait = "0.1"
+url = "2"
+tempfile = "3"
