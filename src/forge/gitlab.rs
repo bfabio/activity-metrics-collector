@@ -22,7 +22,7 @@ impl GitLab {
         if let Some(t) = &self.token {
             req = req.header("PRIVATE-TOKEN", t);
         }
-        let resp = req.send().await?;
+        let resp = super::send_with_retry(req, 3).await?;
         if !resp.status().is_success() {
             return Err(anyhow!("gitlab {} returned {}", url, resp.status()));
         }

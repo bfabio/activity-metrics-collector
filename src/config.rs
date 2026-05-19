@@ -21,6 +21,9 @@ pub struct Config {
     #[arg(long, default_value_t = 4)]
     pub concurrency: usize,
 
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+
     #[arg(long, value_delimiter = ',')]
     pub gitlab_hosts: Vec<String>,
 }

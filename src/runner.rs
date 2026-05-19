@@ -88,11 +88,14 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         .map(|sw| {
             let collector = &collector;
             let api = &api;
+            let dry_run = cfg.dry_run;
             async move {
                 match collector.collect(&sw).await {
                     Ok(m) => {
                         let body = serde_json::json!({ "activity": m.to_namespace() });
-                        if let Err(e) = api.patch_software_analysis(&sw.id, &body).await {
+                        if dry_run {
+                            println!("PATCH /software/{}/analysis {}", sw.id, body);
+                        } else if let Err(e) = api.patch_software_analysis(&sw.id, &body).await {
                             eprintln!("patch {} failed: {e}", sw.id);
                             return None;
                         }
@@ -127,15 +130,11 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         let body = serde_json::json!({ "activity": analysis });
         let id = match cat {
             Some(c) => c.clone(),
-            None => match &root_id {
-                Some(r) => r.clone(),
-                None => {
-                    eprintln!("no root catalog id resolved; skipping root aggregates");
-                    continue;
-                }
-            },
+            None => root_id.clone().unwrap_or_else(|| "<root>".to_string()),
         };
-        if let Err(e) = api.patch_catalog_analysis(&id, &body).await {
+        if cfg.dry_run {
+            println!("PATCH /catalogs/{}/analysis {}", id, body);
+        } else if let Err(e) = api.patch_catalog_analysis(&id, &body).await {
             eprintln!("patch catalog {id} failed: {e}");
         }
     }
