@@ -1,5 +1,15 @@
 use clap::Parser;
 
+/// Loads a `.env` file (dotenv format) into the environment for any key
+/// not already set, so real env vars and CLI flags keep precedence.
+pub fn load_dotenv() {
+    match dotenvy::dotenv() {
+        Ok(path) => eprintln!("loaded env from {}", path.display()),
+        Err(e) if e.not_found() => {}
+        Err(e) => eprintln!("warning: cannot load env file: {e}"),
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "activity-metrics-collector")]
 pub struct Config {

@@ -10,6 +10,7 @@ use clap::Parser;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    config::load_dotenv();
     let cfg = config::Config::parse();
     let summary = runner::run(cfg).await?;
     println!("processed={} failed={}", summary.processed, summary.failed);
