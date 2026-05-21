@@ -34,6 +34,6 @@ pub struct Config {
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
 
-    #[arg(long, value_delimiter = ',')]
+    #[arg(long, env = "GITLAB_HOSTS", value_delimiter = ',')]
     pub gitlab_hosts: Vec<String>,
 }
