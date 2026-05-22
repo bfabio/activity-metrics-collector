@@ -44,10 +44,10 @@ impl Collector {
     }
 
     async fn collect(&self, sw: &Software) -> Result<SoftwareMetrics> {
-        let parsed = Url::parse(&sw.url.url)?;
+        let parsed = Url::parse(&sw.url)?;
         let host = parsed
             .host_str()
-            .ok_or_else(|| anyhow!("no host in {}", sw.url.url))?
+            .ok_or_else(|| anyhow!("no host in {}", sw.url))?
             .to_string();
         let full_name = parsed
             .path()
@@ -56,7 +56,7 @@ impl Collector {
             .to_string();
 
         let path = cache_path(&self.cache_root, &host, &full_name);
-        let cache = read_or_build(&path, &sw.url.url)?;
+        let cache = read_or_build(&path, &sw.url)?;
         let now = OffsetDateTime::now_utc().date();
         let git = derive(&cache, now, self.cfg.recent_days);
 
@@ -81,7 +81,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         cache_root: cache_root(),
     };
 
-    let software = api.list_software().await?;
+    let mut software = api.list_software().await?;
     let total = software.len();
 
     let collected: Vec<(Option<String>, SoftwareMetrics)> = stream::iter(software)

@@ -7,14 +7,9 @@ use url::Url;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Software {
     pub id: String,
-    pub url: SoftwareUrl,
+    pub url: String,
     #[serde(rename = "catalogId")]
     pub catalog_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SoftwareUrl {
-    pub url: String,
 }
 
 pub struct CatalogClient {
@@ -48,7 +43,7 @@ impl CatalogClient {
             }
             match page["links"]["next"].as_str() {
                 Some(next) if !next.is_empty() => {
-                    url = Url::parse(&self.base)
+                    url = Url::parse(&url)
                         .and_then(|b| b.join(next))
                         .map(|u| u.to_string())
                         .map_err(|e| anyhow!("bad next link: {e}"))?;
