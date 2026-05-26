@@ -33,6 +33,11 @@ fn run_git(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8(out.stdout)?)
 }
 
+fn empty_shallow_window(stderr: &str) -> bool {
+    stderr.contains("error processing shallow info")
+        || stderr.contains("no commits selected for shallow requests")
+}
+
 fn parse_commits(log: &str) -> Result<Vec<RawCommit>> {
     let mut commits = Vec::new();
     for line in log.lines() {
@@ -142,7 +147,7 @@ fn build_cache(commits: Vec<RawCommit>, tag_dates: &str) -> Result<Cache> {
     })
 }
 
-pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Cache> {
+pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Option<Cache>> {
     let tmp = tempfile::Builder::new().prefix("vitality-").tempdir()?;
     let dir = tmp.path().to_str().ok_or_else(|| anyhow!("bad tmp path"))?;
 
@@ -157,8 +162,21 @@ pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Cache> {
     }
     clone_args.push(git_url.to_string());
     clone_args.push(dir.to_string());
-    let clone_ref: Vec<&str> = clone_args.iter().map(|s| s.as_str()).collect();
-    run_git(&clone_ref)?;
+
+    let out = Command::new("git")
+        .args(&clone_args)
+        .output()
+        .context("failed to run git clone")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // git aborts a --shallow-since clone when no commit falls in the
+        // window. On an incremental refresh that just means the repo had no
+        // new activity since the last run, not a failure.
+        if since.is_some() && empty_shallow_window(&stderr) {
+            return Ok(None);
+        }
+        return Err(anyhow!("git {:?} failed: {}", clone_args, stderr));
+    }
 
     let log = run_git(&[
         "-C",
@@ -177,7 +195,7 @@ pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Cache> {
         "refs/tags",
     ])?;
 
-    build_cache(commits, &tag_dates)
+    build_cache(commits, &tag_dates).map(Some)
 }
 
 fn persist(cache_path: &Path, cache: &Cache) -> Result<()> {
@@ -248,13 +266,46 @@ pub fn read_or_build(cache_path: &Path, git_url: &str) -> Result<Cache> {
             if existing.last_updated >= today {
                 return Ok(existing);
             }
-            let fresh = build_from_clone(git_url, Some(existing.last_updated))?;
-            let merged = merge_caches(existing, fresh);
-            persist(cache_path, &merged)?;
-            return Ok(merged);
+            match build_from_clone(git_url, Some(existing.last_updated))? {
+                Some(fresh) => {
+                    let merged = merge_caches(existing, fresh);
+                    persist(cache_path, &merged)?;
+                    return Ok(merged);
+                }
+                None => {
+                    let mut existing = existing;
+                    existing.last_updated = today;
+                    persist(cache_path, &existing)?;
+                    return Ok(existing);
+                }
+            }
         }
     }
-    let built = build_from_clone(git_url, None)?;
+    let built = build_from_clone(git_url, None)?
+        .ok_or_else(|| anyhow!("clone produced no commits"))?;
     persist(cache_path, &built)?;
     Ok(built)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::empty_shallow_window;
+
+    #[test]
+    fn detects_empty_shallow_window() {
+        assert!(empty_shallow_window(
+            "fatal: error processing shallow info: 4\n"
+        ));
+        assert!(empty_shallow_window(
+            "fatal: no commits selected for shallow requests\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_unrelated_git_errors() {
+        assert!(!empty_shallow_window("fatal: repository not found"));
+        assert!(!empty_shallow_window(
+            "fatal: could not read Username: terminal prompts disabled"
+        ));
+    }
 }
