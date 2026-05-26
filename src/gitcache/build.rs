@@ -249,13 +249,26 @@ fn merge_caches(existing: Cache, fresh: Cache) -> Cache {
         prev = date;
     }
 
+    // A --shallow-since clone only carries tags whose target is inside the
+    // window, so fresh.tags drops every older release. Reconstruct the dated
+    // tags from both caches and let fresh win on collisions.
+    let mut tag_days: BTreeMap<Date, u16> = BTreeMap::new();
+    for cache in [&existing, &fresh] {
+        let mut cur = cache.first_entry;
+        for t in &cache.tags {
+            cur += Duration::days(t.delta as i64);
+            tag_days.insert(cur, t.count);
+        }
+    }
+    let tags = tags_from_days(tag_days, first_entry);
+
     Cache {
         last_updated: fresh.last_updated,
         oldest_commit: existing.oldest_commit.min(fresh.oldest_commit),
         first_entry,
         authors,
         entries,
-        tags: fresh.tags,
+        tags,
     }
 }
 
@@ -307,5 +320,43 @@ mod tests {
         assert!(!empty_shallow_window(
             "fatal: could not read Username: terminal prompts disabled"
         ));
+    }
+
+    #[test]
+    fn merge_preserves_tags_absent_from_shallow_fresh() {
+        use super::{merge_caches, Cache, DayEntry, TagEntry};
+        use time::macros::date;
+
+        let existing = Cache {
+            last_updated: date!(2026 - 05 - 25),
+            oldest_commit: date!(2026 - 04 - 01),
+            first_entry: date!(2026 - 04 - 01),
+            authors: vec!["a@b.c".into()],
+            entries: vec![DayEntry {
+                delta: 0,
+                commits: 1,
+                merges: 0,
+                authors: vec![0],
+            }],
+            tags: vec![TagEntry { delta: 0, count: 3 }],
+        };
+        let fresh = Cache {
+            last_updated: date!(2026 - 05 - 26),
+            oldest_commit: date!(2026 - 05 - 26),
+            first_entry: date!(2026 - 05 - 26),
+            authors: vec!["a@b.c".into()],
+            entries: vec![DayEntry {
+                delta: 0,
+                commits: 1,
+                merges: 0,
+                authors: vec![0],
+            }],
+            tags: vec![],
+        };
+
+        let merged = merge_caches(existing, fresh);
+
+        let releases: u16 = merged.tags.iter().map(|t| t.count).sum();
+        assert_eq!(releases, 3);
     }
 }
