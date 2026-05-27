@@ -1,7 +1,7 @@
 use crate::aggregate::catalog_analysis;
 use crate::catalog_client::{CatalogClient, Software};
 use crate::config::Config;
-use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind};
+use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind, SocialMetrics};
 use crate::gitcache::{
     build::read_or_build,
     derive::derive,
@@ -11,8 +11,9 @@ use crate::metrics::SoftwareMetrics;
 use anyhow::{anyhow, Result};
 use futures::stream::{self, StreamExt};
 use reqwest::Client;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -24,7 +25,20 @@ pub struct Summary {
 struct Collector {
     cfg: Config,
     http: Client,
+    github_social: HashMap<String, SocialMetrics>,
     cache_root: PathBuf,
+}
+
+fn parse_repo(raw: &str) -> Option<(String, String)> {
+    let parsed = Url::parse(raw).ok()?;
+    let host = parsed.host_str()?.to_string();
+    let full_name = parsed
+        .path()
+        .trim_matches('/')
+        .trim_end_matches(".git")
+        .to_string();
+
+    Some((host, full_name))
 }
 
 impl Collector {
@@ -44,24 +58,19 @@ impl Collector {
     }
 
     async fn collect(&self, sw: &Software) -> Result<SoftwareMetrics> {
-        let parsed = Url::parse(&sw.url)?;
-        let host = parsed
-            .host_str()
-            .ok_or_else(|| anyhow!("no host in {}", sw.url))?
-            .to_string();
-        let full_name = parsed
-            .path()
-            .trim_matches('/')
-            .trim_end_matches(".git")
-            .to_string();
+        let (host, full_name) = parse_repo(&sw.url).ok_or_else(|| anyhow!("bad url {}", sw.url))?;
 
         let path = cache_path(&self.cache_root, &host, &full_name);
         let cache = read_or_build(&path, &sw.url)?;
         let now = OffsetDateTime::now_utc().date();
         let git = derive(&cache, now, self.cfg.recent_days);
 
-        let social = match self.forge_for(&host) {
-            Some(forge) => forge.social(&full_name).await.ok(),
+        let social = match resolve_kind(&host, &self.cfg.gitlab_hosts) {
+            Some(ForgeKind::GitHub) => self.github_social.get(&full_name).cloned(),
+            Some(ForgeKind::GitLab) => match self.forge_for(&host) {
+                Some(forge) => forge.social(&full_name).await.ok(),
+                None => None,
+            },
             None => None,
         };
 
@@ -75,34 +84,66 @@ impl Collector {
 
 pub async fn run(cfg: Config) -> Result<Summary> {
     let api = CatalogClient::new(Client::new(), cfg.api_base_url.clone(), cfg.api_token.clone());
+
+    eprintln!("fetching software list from {} ...", cfg.api_base_url);
+    let mut software = api.list_software().await?;
+    let total = software.len();
+
+    let github_repos: Vec<String> = software
+        .iter()
+        .filter_map(|sw| parse_repo(&sw.url))
+        .filter(|(host, _)| resolve_kind(host, &cfg.gitlab_hosts) == Some(ForgeKind::GitHub))
+        .map(|(_, full_name)| full_name)
+        .collect();
+
+    let github_social = if github_repos.is_empty() {
+        HashMap::new()
+    } else {
+        eprintln!(
+            "fetching github social for {} repos via graphql ...",
+            github_repos.len()
+        );
+        let gh = GitHub::new(
+            Client::new(),
+            "https://api.github.com".into(),
+            cfg.github_token.clone(),
+        );
+        gh.social_batch(&github_repos).await
+    };
+
     let collector = Collector {
         cfg: cfg.clone(),
         http: Client::new(),
+        github_social,
         cache_root: cache_root(),
     };
 
-    let mut software = api.list_software().await?;
-    let total = software.len();
+    eprintln!("collecting metrics for {total} software (concurrency={})", cfg.concurrency);
+    let done = AtomicUsize::new(0);
 
     let collected: Vec<(Option<String>, SoftwareMetrics)> = stream::iter(software)
         .map(|sw| {
             let collector = &collector;
             let api = &api;
+            let done = &done;
             let dry_run = cfg.dry_run;
             async move {
-                match collector.collect(&sw).await {
+                let result = collector.collect(&sw).await;
+                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                match result {
                     Ok(m) => {
                         let body = serde_json::json!({ "activity": m.to_namespace() });
                         if dry_run {
                             println!("PATCH /software/{}/analysis {}", sw.id, body);
                         } else if let Err(e) = api.patch_software_analysis(&sw.id, &body).await {
-                            eprintln!("patch {} failed: {e}", sw.id);
+                            eprintln!("[{n}/{total}] patch {} failed: {e}", sw.url);
                             return None;
                         }
+                        eprintln!("[{n}/{total}] ok {}", sw.url);
                         Some((sw.catalog_id.clone(), m))
                     }
                     Err(e) => {
-                        eprintln!("collect {} failed: {e}", sw.id);
+                        eprintln!("[{n}/{total}] collect {} failed: {e}", sw.url);
                         None
                     }
                 }

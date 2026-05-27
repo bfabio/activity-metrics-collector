@@ -1,6 +1,13 @@
 use super::{Forge, SocialMetrics};
 use anyhow::{anyhow, Result};
 use reqwest::Client;
+use serde_json::{json, Map, Value};
+use std::collections::HashMap;
+
+const SOCIAL_FRAGMENT: &str = "fragment S on Repository { \
+    stargazerCount forkCount \
+    openI: issues(states: OPEN) { totalCount } \
+    closedI: issues(states: CLOSED) { totalCount } }";
 
 pub struct GitHub {
     client: Client,
@@ -36,6 +43,85 @@ impl GitHub {
             return Err(anyhow!("github {} returned {}", url, resp.status()));
         }
         Ok(resp.json::<T>().await?)
+    }
+
+    /// Fetches social metrics for many repos at once via the GraphQL API,
+    /// 100 per request. GraphQL requires a token, so without one this
+    /// returns an empty map. full_name keys are echoed back unchanged.
+    pub async fn social_batch(&self, full_names: &[String]) -> HashMap<String, SocialMetrics> {
+        if self.token.is_none() {
+            eprintln!("github graphql requires a token; skipping github social metrics");
+            return HashMap::new();
+        }
+
+        let mut out = HashMap::new();
+        for chunk in full_names.chunks(100) {
+            match self.fetch_chunk(chunk).await {
+                Ok(m) => out.extend(m),
+                Err(e) => eprintln!("github graphql batch failed: {e}"),
+            }
+        }
+        out
+    }
+
+    async fn fetch_chunk(&self, chunk: &[String]) -> Result<HashMap<String, SocialMetrics>> {
+        let mut decls = Vec::new();
+        let mut selections = String::new();
+        let mut variables = Map::new();
+        for (i, full) in chunk.iter().enumerate() {
+            let Some((owner, name)) = full.split_once('/') else {
+                continue;
+            };
+            if name.contains('/') {
+                continue;
+            }
+            decls.push(format!("$o{i}:String!,$n{i}:String!"));
+            selections.push_str(&format!("r{i}: repository(owner:$o{i},name:$n{i}){{...S}} "));
+            variables.insert(format!("o{i}"), Value::from(owner));
+            variables.insert(format!("n{i}"), Value::from(name));
+        }
+        let query = format!(
+            "query batch({}){{{}}} {SOCIAL_FRAGMENT}",
+            decls.join(","),
+            selections
+        );
+
+        let mut req = self
+            .client
+            .post(format!("{}/graphql", self.base))
+            .header("User-Agent", "activity-metrics-collector")
+            .json(&json!({ "query": query, "variables": Value::Object(variables) }));
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+
+        let resp = super::send_with_retry(req, 3).await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("github graphql returned {}", resp.status()));
+        }
+        let body: Value = resp.json().await?;
+        if let Some(errors) = body.get("errors") {
+            eprintln!("github graphql errors: {errors}");
+        }
+        let data = &body["data"];
+
+        let mut out = HashMap::new();
+        for (i, full) in chunk.iter().enumerate() {
+            let repo = &data[format!("r{i}")];
+            if repo.is_null() {
+                continue;
+            }
+            out.insert(
+                full.clone(),
+                SocialMetrics {
+                    stars: repo["stargazerCount"].as_u64().unwrap_or(0),
+                    forks: repo["forkCount"].as_u64().unwrap_or(0),
+                    issues_open: repo["openI"]["totalCount"].as_u64().unwrap_or(0),
+                    issues_closed: repo["closedI"]["totalCount"].as_u64().unwrap_or(0),
+                },
+            );
+        }
+        Ok(out)
     }
 }
 
