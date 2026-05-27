@@ -86,7 +86,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     let api = CatalogClient::new(Client::new(), cfg.api_base_url.clone(), cfg.api_token.clone());
 
     eprintln!("fetching software list from {} ...", cfg.api_base_url);
-    let mut software = api.list_software().await?;
+    let software = api.list_software(cfg.catalog.as_deref()).await?;
     let total = software.len();
 
     let github_repos: Vec<String> = software
@@ -161,10 +161,18 @@ pub async fn run(cfg: Config) -> Result<Summary> {
 
     let mut by_catalog: BTreeMap<Option<String>, Vec<SoftwareMetrics>> = BTreeMap::new();
     for (cat, m) in collected {
-        by_catalog.entry(cat).or_default().push(m);
+        let key = match &cfg.catalog {
+            Some(id) => Some(id.clone()),
+            None => cat,
+        };
+        by_catalog.entry(key).or_default().push(m);
     }
 
-    let root_id = api.resolve_root_catalog_id().await.ok();
+    let root_id = if by_catalog.contains_key(&None) {
+        api.resolve_root_catalog_id().await.ok()
+    } else {
+        None
+    };
 
     for (cat, metrics) in &by_catalog {
         let analysis = catalog_analysis(metrics, cfg.recent_days);

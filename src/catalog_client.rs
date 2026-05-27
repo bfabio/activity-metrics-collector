@@ -27,9 +27,12 @@ impl CatalogClient {
         }
     }
 
-    pub async fn list_software(&self) -> Result<Vec<Software>> {
+    pub async fn list_software(&self, catalog: Option<&str>) -> Result<Vec<Software>> {
         let mut out = Vec::new();
-        let mut url = format!("{}/software?page[size]=100", self.base);
+        let mut url = match catalog {
+            Some(id) => format!("{}/catalogs/{}/software?page[size]=100", self.base, id),
+            None => format!("{}/software?page[size]=100", self.base),
+        };
         loop {
             let resp = self.client.get(&url).send().await?;
             if !resp.status().is_success() {

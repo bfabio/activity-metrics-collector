@@ -38,6 +38,7 @@ Flags:
 - `--recent-days` window in days for the recent metrics (default 180)
 - `--concurrency` repositories processed at once (default 4)
 - `--dry-run` print the PATCH requests instead of sending them
+- `--catalog <id>` process only the software in catalog <id>
 
 ## Output
 
