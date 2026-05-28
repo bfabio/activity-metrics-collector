@@ -356,7 +356,7 @@ mod tests {
 
         let merged = merge_caches(existing, fresh);
 
-        let releases: u16 = merged.tags.iter().map(|t| t.count).sum();
-        assert_eq!(releases, 3);
+        let tags: u16 = merged.tags.iter().map(|t| t.count).sum();
+        assert_eq!(tags, 3);
     }
 }

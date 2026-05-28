@@ -60,15 +60,15 @@ pub fn catalog_analysis(metrics: &[SoftwareMetrics], recent_days: u32) -> Catalo
     for m in metrics {
         cols.entry("contributors").or_default().push(m.git.contributors);
         cols.entry("commitsAllTime").or_default().push(m.git.commits_all_time);
-        cols.entry("pullRequestsAllTime").or_default().push(m.git.pull_requests_all_time);
         cols.entry("commitsRecent").or_default().push(m.git.commits_recent);
-        cols.entry("pullRequestsRecent").or_default().push(m.git.pull_requests_recent);
-        cols.entry("releases").or_default().push(m.git.releases);
-        if let Some(s) = &m.social {
-            cols.entry("stars").or_default().push(s.stars);
-            cols.entry("forks").or_default().push(s.forks);
-            cols.entry("issuesOpen").or_default().push(s.issues_open);
-            cols.entry("issuesClosed").or_default().push(s.issues_closed);
+        cols.entry("tags").or_default().push(m.git.tags);
+        if let Some(f) = &m.forge {
+            cols.entry("stars").or_default().push(f.stars);
+            cols.entry("forks").or_default().push(f.forks);
+            cols.entry("issuesOpen").or_default().push(f.issues_open);
+            cols.entry("issuesClosed").or_default().push(f.issues_closed);
+            cols.entry("pullRequestsAllTime").or_default().push(f.pull_requests_all_time);
+            cols.entry("pullRequestsRecent").or_default().push(f.pull_requests_recent);
         }
     }
 

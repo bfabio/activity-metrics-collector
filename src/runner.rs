@@ -1,7 +1,7 @@
 use crate::aggregate::catalog_analysis;
 use crate::catalog_client::{CatalogClient, Software};
 use crate::config::Config;
-use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind, SocialMetrics};
+use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind, ForgeMetrics};
 use crate::gitcache::{
     build::read_or_build,
     derive::derive,
@@ -14,7 +14,7 @@ use reqwest::Client;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 use url::Url;
 
 pub struct Summary {
@@ -25,7 +25,7 @@ pub struct Summary {
 struct Collector {
     cfg: Config,
     http: Client,
-    github_social: HashMap<String, SocialMetrics>,
+    github_metrics: HashMap<String, ForgeMetrics>,
     cache_root: PathBuf,
 }
 
@@ -64,11 +64,12 @@ impl Collector {
         let cache = read_or_build(&path, &sw.url)?;
         let now = OffsetDateTime::now_utc().date();
         let git = derive(&cache, now, self.cfg.recent_days);
+        let recent_cutoff = now - Duration::days(self.cfg.recent_days as i64);
 
-        let social = match resolve_kind(&host, &self.cfg.gitlab_hosts) {
-            Some(ForgeKind::GitHub) => self.github_social.get(&full_name).cloned(),
+        let forge = match resolve_kind(&host, &self.cfg.gitlab_hosts) {
+            Some(ForgeKind::GitHub) => self.github_metrics.get(&full_name).cloned(),
             Some(ForgeKind::GitLab) => match self.forge_for(&host) {
-                Some(forge) => forge.social(&full_name).await.ok(),
+                Some(forge) => forge.metrics(&full_name, recent_cutoff).await.ok(),
                 None => None,
             },
             None => None,
@@ -76,7 +77,7 @@ impl Collector {
 
         Ok(SoftwareMetrics {
             git,
-            social,
+            forge,
             recent_days: self.cfg.recent_days,
         })
     }
@@ -96,11 +97,12 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         .map(|(_, full_name)| full_name)
         .collect();
 
-    let github_social = if github_repos.is_empty() {
+    let recent_cutoff = OffsetDateTime::now_utc().date() - Duration::days(cfg.recent_days as i64);
+    let github_metrics = if github_repos.is_empty() {
         HashMap::new()
     } else {
         eprintln!(
-            "fetching github social for {} repos via graphql ...",
+            "fetching github forge metrics for {} repos via graphql ...",
             github_repos.len()
         );
         let gh = GitHub::new(
@@ -108,13 +110,13 @@ pub async fn run(cfg: Config) -> Result<Summary> {
             "https://api.github.com".into(),
             cfg.github_token.clone(),
         );
-        gh.social_batch(&github_repos).await
+        gh.metrics_batch(&github_repos, recent_cutoff).await
     };
 
     let collector = Collector {
         cfg: cfg.clone(),
         http: Client::new(),
-        github_social,
+        github_metrics,
         cache_root: cache_root(),
     };
 

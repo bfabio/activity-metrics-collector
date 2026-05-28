@@ -4,8 +4,8 @@ Collects repository activity metrics of a catalog and writes them to the
 `analysis` field of the software-catalog-api.
 
 Metrics come from two sources: the git history (contributors,
-commits, merges, tags, repository age) and the forge API (stars,
-forks, open and closed issues) for GitHub and GitLab.
+commits, tags, repository age) and the forge API (stars, forks,
+open and closed issues, pull requests) for GitHub and GitLab.
 The git history is read from a blobless bare clone made in a temp
 dir. Only a compact binary summary is kept under `$XDG_CACHE_HOME`
 or `~/.cache`.
@@ -51,23 +51,25 @@ Per software it sends `PATCH /software/{id}/analysis` with an
     "v": 1,
     "contributors": 12,
     "commitsAllTime": 3400,
-    "pullRequestsAllTime": 210,
     "commitsRecent": 180,
-    "pullRequestsRecent": 14,
-    "releases": 22,
+    "tags": 22,
     "oldestCommit": "2016-04-03",
     "recentDays": 180,
     "stars": 87,
     "forks": 13,
     "issuesOpen": 5,
-    "issuesClosed": 140
+    "issuesClosed": 140,
+    "pullRequestsAllTime": 210,
+    "pullRequestsRecent": 14
   }
 }
 ```
 
-`pullRequests*` count merge commits and `releases` counts tags. The
-social fields (`stars`, `forks`, `issuesOpen`, `issuesClosed`) are
-omitted when the forge is unsupported or its API call fails.
+`tags` is the git tag count. The forge fields (`stars`, `forks`,
+`issuesOpen`, `issuesClosed`, `pullRequestsAllTime`,
+`pullRequestsRecent`) come from the forge API and are omitted when
+the forge is unsupported or its call fails. Pull requests count the
+forge PRs/MRs (`is:pr` on GitHub), not git merge commits.
 
 Per catalog it sends `PATCH /catalogs/{id}/analysis` with per metric
 statistics over the catalog software:
@@ -80,14 +82,16 @@ statistics over the catalog software:
     "recentDays": 180,
     "stats": {
       "commitsAllTime": { "max": 3400, "min": 0, "count": 240, "mean": 412.5, "median": 120, "p95": 1800 }
+      // ... one entry per metric, truncated
     }
   }
 }
 ```
 
-`stats` holds one entry per metric (`contributors`, `commitsAllTime`,
-`pullRequestsAllTime`, `commitsRecent`, `pullRequestsRecent`,
-`releases`, and the social metrics when present).
+`stats` holds one entry per metric: `contributors`, `commitsAllTime`,
+`commitsRecent`, `tags`, and the forge metrics (`stars`, `forks`,
+`issuesOpen`, `issuesClosed`, `pullRequestsAllTime`,
+`pullRequestsRecent`) when present.
 
 ## License
 

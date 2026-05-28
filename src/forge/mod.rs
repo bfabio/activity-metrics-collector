@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::time::Duration as StdDuration;
+use time::Date;
 
 pub mod github;
 pub mod gitlab;
@@ -50,11 +51,13 @@ fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SocialMetrics {
+pub struct ForgeMetrics {
     pub stars: u64,
     pub forks: u64,
     pub issues_open: u64,
     pub issues_closed: u64,
+    pub pull_requests_all_time: u64,
+    pub pull_requests_recent: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,7 +68,7 @@ pub enum ForgeKind {
 
 #[async_trait::async_trait]
 pub trait Forge: Send + Sync {
-    async fn social(&self, full_name: &str) -> Result<SocialMetrics>;
+    async fn metrics(&self, full_name: &str, recent_cutoff: Date) -> Result<ForgeMetrics>;
 }
 
 pub fn resolve_kind(host: &str, gitlab_hosts: &[String]) -> Option<ForgeKind> {
