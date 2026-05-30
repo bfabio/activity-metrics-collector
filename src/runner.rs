@@ -177,7 +177,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     };
 
     for (cat, metrics) in &by_catalog {
-        let analysis = catalog_analysis(metrics, cfg.recent_days);
+        let analysis = catalog_analysis(metrics, cfg.recent_days, OffsetDateTime::now_utc());
         let body = serde_json::json!({ "activity": analysis });
         let id = match cat {
             Some(c) => c.clone(),
