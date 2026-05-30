@@ -1,6 +1,7 @@
 use crate::metrics::SoftwareMetrics;
 use serde::Serialize;
 use std::collections::BTreeMap;
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Stats {
@@ -47,6 +48,8 @@ pub fn stats(values: &[u64]) -> Option<Stats> {
 #[derive(Serialize)]
 pub struct CatalogAnalysis {
     pub v: u32,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: String,
     #[serde(rename = "softwareCount")]
     pub software_count: u64,
     #[serde(rename = "recentDays")]
@@ -54,7 +57,11 @@ pub struct CatalogAnalysis {
     pub stats: BTreeMap<String, Stats>,
 }
 
-pub fn catalog_analysis(metrics: &[SoftwareMetrics], recent_days: u32) -> CatalogAnalysis {
+pub fn catalog_analysis(
+    metrics: &[SoftwareMetrics],
+    recent_days: u32,
+    now: OffsetDateTime,
+) -> CatalogAnalysis {
     let mut cols: BTreeMap<&'static str, Vec<u64>> = BTreeMap::new();
 
     for m in metrics {
@@ -79,8 +86,13 @@ pub fn catalog_analysis(metrics: &[SoftwareMetrics], recent_days: u32) -> Catalo
         }
     }
 
+    let updated_at = now
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+
     CatalogAnalysis {
         v: 1,
+        updated_at,
         software_count: metrics.len() as u64,
         recent_days,
         stats: out,
