@@ -1,3 +1,4 @@
+use crate::forge::ForgeResult;
 use crate::metrics::SoftwareMetrics;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -69,7 +70,7 @@ pub fn catalog_analysis(
         cols.entry("commitsAllTime").or_default().push(m.git.commits_all_time);
         cols.entry("commitsRecent").or_default().push(m.git.commits_recent);
         cols.entry("tags").or_default().push(m.git.tags);
-        if let Some(f) = &m.forge {
+        if let ForgeResult::Ok(f) = &m.forge {
             cols.entry("stars").or_default().push(f.stars);
             cols.entry("forks").or_default().push(f.forks);
             cols.entry("issuesOpen").or_default().push(f.issues_open);

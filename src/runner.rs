@@ -1,7 +1,7 @@
 use crate::aggregate::catalog_analysis;
 use crate::catalog_client::{CatalogClient, Software};
 use crate::config::Config;
-use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind, ForgeMetrics};
+use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind, ForgeMetrics, ForgeResult};
 use crate::gitcache::{
     build::read_or_build,
     derive::derive,
@@ -67,12 +67,18 @@ impl Collector {
         let recent_cutoff = now - Duration::days(self.cfg.recent_days as i64);
 
         let forge = match resolve_kind(&host, &self.cfg.gitlab_hosts) {
-            Some(ForgeKind::GitHub) => self.github_metrics.get(&full_name).cloned(),
-            Some(ForgeKind::GitLab) => match self.forge_for(&host) {
-                Some(forge) => forge.metrics(&full_name, recent_cutoff).await.ok(),
-                None => None,
+            Some(ForgeKind::GitHub) => match self.github_metrics.get(&full_name).cloned() {
+                Some(m) => ForgeResult::Ok(m),
+                None => ForgeResult::Unsupported,
             },
-            None => None,
+            Some(ForgeKind::GitLab) => match self.forge_for(&host) {
+                Some(f) => match f.metrics(&full_name, recent_cutoff).await {
+                    Ok(m) => ForgeResult::Ok(m),
+                    Err(_) => ForgeResult::Failed,
+                },
+                None => ForgeResult::Unsupported,
+            },
+            None => ForgeResult::Unsupported,
         };
 
         Ok(SoftwareMetrics {
