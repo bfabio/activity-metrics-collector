@@ -1,12 +1,33 @@
-use crate::forge::ForgeMetrics;
+use crate::forge::{ForgeMetrics, ForgeResult};
 use crate::gitcache::derive::GitMetrics;
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use time::macros::format_description;
+
+pub enum MaybeNull<T> {
+    Absent,
+    Null,
+    Value(T),
+}
+
+impl<T> MaybeNull<T> {
+    pub fn is_absent(&self) -> bool {
+        matches!(self, MaybeNull::Absent)
+    }
+}
+
+impl<T: Serialize> Serialize for MaybeNull<T> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            MaybeNull::Absent | MaybeNull::Null => s.serialize_none(),
+            MaybeNull::Value(v) => v.serialize(s),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SoftwareMetrics {
     pub git: GitMetrics,
-    pub forge: Option<ForgeMetrics>,
+    pub forge: ForgeResult,
     pub recent_days: u32,
 }
 
@@ -23,18 +44,26 @@ pub struct ActivityNamespace {
     pub oldest_commit: String,
     #[serde(rename = "recentDays")]
     pub recent_days: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stars: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub forks: Option<u64>,
-    #[serde(rename = "issuesOpen", skip_serializing_if = "Option::is_none")]
-    pub issues_open: Option<u64>,
-    #[serde(rename = "issuesClosed", skip_serializing_if = "Option::is_none")]
-    pub issues_closed: Option<u64>,
-    #[serde(rename = "pullRequestsAllTime", skip_serializing_if = "Option::is_none")]
-    pub pull_requests_all_time: Option<u64>,
-    #[serde(rename = "pullRequestsRecent", skip_serializing_if = "Option::is_none")]
-    pub pull_requests_recent: Option<u64>,
+    #[serde(skip_serializing_if = "MaybeNull::is_absent")]
+    pub stars: MaybeNull<u64>,
+    #[serde(skip_serializing_if = "MaybeNull::is_absent")]
+    pub forks: MaybeNull<u64>,
+    #[serde(rename = "issuesOpen", skip_serializing_if = "MaybeNull::is_absent")]
+    pub issues_open: MaybeNull<u64>,
+    #[serde(rename = "issuesClosed", skip_serializing_if = "MaybeNull::is_absent")]
+    pub issues_closed: MaybeNull<u64>,
+    #[serde(rename = "pullRequestsAllTime", skip_serializing_if = "MaybeNull::is_absent")]
+    pub pull_requests_all_time: MaybeNull<u64>,
+    #[serde(rename = "pullRequestsRecent", skip_serializing_if = "MaybeNull::is_absent")]
+    pub pull_requests_recent: MaybeNull<u64>,
+}
+
+fn forge_field(result: &ForgeResult, f: impl Fn(&ForgeMetrics) -> u64) -> MaybeNull<u64> {
+    match result {
+        ForgeResult::Unsupported => MaybeNull::Absent,
+        ForgeResult::Failed => MaybeNull::Null,
+        ForgeResult::Ok(m) => MaybeNull::Value(f(m)),
+    }
 }
 
 impl SoftwareMetrics {
@@ -48,12 +77,12 @@ impl SoftwareMetrics {
             tags: self.git.tags,
             oldest_commit: self.git.oldest_commit.format(&fmt).unwrap_or_default(),
             recent_days: self.recent_days,
-            stars: self.forge.as_ref().map(|f| f.stars),
-            forks: self.forge.as_ref().map(|f| f.forks),
-            issues_open: self.forge.as_ref().map(|f| f.issues_open),
-            issues_closed: self.forge.as_ref().map(|f| f.issues_closed),
-            pull_requests_all_time: self.forge.as_ref().map(|f| f.pull_requests_all_time),
-            pull_requests_recent: self.forge.as_ref().map(|f| f.pull_requests_recent),
+            stars: forge_field(&self.forge, |f| f.stars),
+            forks: forge_field(&self.forge, |f| f.forks),
+            issues_open: forge_field(&self.forge, |f| f.issues_open),
+            issues_closed: forge_field(&self.forge, |f| f.issues_closed),
+            pull_requests_all_time: forge_field(&self.forge, |f| f.pull_requests_all_time),
+            pull_requests_recent: forge_field(&self.forge, |f| f.pull_requests_recent),
         }
     }
 }

@@ -51,6 +51,13 @@ fn retry_after_secs(headers: &reqwest::header::HeaderMap) -> Option<u64> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForgeResult {
+    Unsupported,
+    Failed,
+    Ok(ForgeMetrics),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForgeMetrics {
     pub stars: u64,
     pub forks: u64,
