@@ -14,5 +14,6 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::parse();
     let summary = runner::run(cfg).await?;
     println!("processed={} failed={}", summary.processed, summary.failed);
+    println!("{}", summary.cache);
     Ok(())
 }
