@@ -1,4 +1,4 @@
-use super::{codec, Cache, DayEntry, TagEntry};
+use super::{codec, Cache, CacheOutcome, DayEntry, TagEntry};
 use anyhow::{anyhow, Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -147,7 +147,23 @@ fn build_cache(commits: Vec<RawCommit>, tag_dates: &str) -> Result<Cache> {
     })
 }
 
-pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Option<Cache>> {
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            total += dir_size(&entry.path());
+        } else {
+            total += meta.len();
+        }
+    }
+    total
+}
+
+pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Option<(Cache, u64)>> {
     let tmp = tempfile::Builder::new().prefix("vitality-").tempdir()?;
     let dir = tmp.path().to_str().ok_or_else(|| anyhow!("bad tmp path"))?;
 
@@ -195,7 +211,8 @@ pub fn build_from_clone(git_url: &str, since: Option<Date>) -> Result<Option<Cac
         "refs/tags",
     ])?;
 
-    build_cache(commits, &tag_dates).map(Some)
+    let bytes = dir_size(&Path::new(dir).join("objects"));
+    build_cache(commits, &tag_dates).map(|cache| Some((cache, bytes)))
 }
 
 fn persist(cache_path: &Path, cache: &Cache) -> Result<()> {
@@ -272,37 +289,50 @@ fn merge_caches(existing: Cache, fresh: Cache) -> Cache {
     }
 }
 
-pub fn read_or_build(cache_path: &Path, git_url: &str) -> Result<Cache> {
+pub fn read_or_build(cache_path: &Path, git_url: &str) -> Result<(Cache, CacheOutcome)> {
     let today = OffsetDateTime::now_utc().date();
     if let Ok(bytes) = std::fs::read(cache_path) {
         if let Ok(existing) = codec::decode(&bytes) {
             if existing.last_updated >= today {
-                return Ok(existing);
+                return Ok((existing, CacheOutcome::Hit));
             }
             match build_from_clone(git_url, Some(existing.last_updated))? {
-                Some(fresh) => {
+                Some((fresh, downloaded)) => {
                     let merged = merge_caches(existing, fresh);
                     persist(cache_path, &merged)?;
-                    return Ok(merged);
+                    return Ok((merged, CacheOutcome::Incremental { bytes: downloaded }));
                 }
                 None => {
                     let mut existing = existing;
                     existing.last_updated = today;
                     persist(cache_path, &existing)?;
-                    return Ok(existing);
+                    return Ok((existing, CacheOutcome::Noop));
                 }
             }
         }
     }
-    let built = build_from_clone(git_url, None)?
+    let (built, downloaded) = build_from_clone(git_url, None)?
         .ok_or_else(|| anyhow!("clone produced no commits"))?;
     persist(cache_path, &built)?;
-    Ok(built)
+    Ok((built, CacheOutcome::Cold { bytes: downloaded }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::empty_shallow_window;
+    use super::{dir_size, empty_shallow_window};
+
+    #[test]
+    fn dir_size_sums_files_recursively() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        std::fs::write(root.join("a.bin"), vec![0u8; 100]).unwrap();
+        let nested = root.join("objects");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(nested.join("b.bin"), vec![0u8; 50]).unwrap();
+
+        assert_eq!(dir_size(root), 150);
+    }
 
     #[test]
     fn detects_empty_shallow_window() {
@@ -320,6 +350,36 @@ mod tests {
         assert!(!empty_shallow_window(
             "fatal: could not read Username: terminal prompts disabled"
         ));
+    }
+
+    #[test]
+    fn read_or_build_reports_hit_for_fresh_cache() {
+        use super::{read_or_build, Cache, DayEntry};
+        use crate::gitcache::CacheOutcome;
+        use time::OffsetDateTime;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let cache_path = tmp.path().join("repo.cache");
+
+        let today = OffsetDateTime::now_utc().date();
+        let cache = Cache {
+            last_updated: today,
+            oldest_commit: today,
+            first_entry: today,
+            authors: vec!["a@b.c".into()],
+            entries: vec![DayEntry {
+                delta: 0,
+                commits: 1,
+                merges: 0,
+                authors: vec![0],
+            }],
+            tags: vec![],
+        };
+        std::fs::write(&cache_path, super::codec::encode(&cache).unwrap()).unwrap();
+
+        let (_, outcome) = read_or_build(&cache_path, "file:///does-not-exist").unwrap();
+
+        assert!(matches!(outcome, CacheOutcome::Hit));
     }
 
     #[test]

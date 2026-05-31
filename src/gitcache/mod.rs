@@ -5,6 +5,14 @@ pub mod codec;
 pub mod derive;
 pub mod paths;
 
+#[derive(Debug, Clone, Copy)]
+pub enum CacheOutcome {
+    Cold { bytes: u64 },
+    Incremental { bytes: u64 },
+    Noop,
+    Hit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Cache {
     pub last_updated: Date,
