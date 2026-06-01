@@ -11,6 +11,11 @@ const FORGE_FRAGMENT: &str = "fragment S on Repository { \
     closedI: issues(states: CLOSED) { totalCount } \
     prAll: pullRequests { totalCount } }";
 
+/// Each repo in a batch is an aliased `repository` lookup. A smaller
+/// batch keeps the query well under GitHub's GraphQL complexity limit
+/// and limits how many repos lose their metrics when a chunk fails.
+const FORGE_CHUNK: usize = 50;
+
 /// Recent pull requests need a date-filtered `search`, which is far more
 /// expensive than a `repository` lookup, so they run in their own smaller
 /// batches to keep any single query under GitHub's complexity limit.
@@ -90,7 +95,7 @@ impl GitHub {
         }
 
         let mut out = HashMap::new();
-        for chunk in full_names.chunks(100) {
+        for chunk in full_names.chunks(FORGE_CHUNK) {
             match self.fetch_chunk(chunk).await {
                 Ok(m) => out.extend(m),
                 Err(e) => eprintln!("github graphql batch failed: {e}"),
