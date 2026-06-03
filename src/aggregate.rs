@@ -76,7 +76,9 @@ pub fn catalog_analysis(
             cols.entry("issuesOpen").or_default().push(f.issues_open);
             cols.entry("issuesClosed").or_default().push(f.issues_closed);
             cols.entry("pullRequestsAllTime").or_default().push(f.pull_requests_all_time);
-            cols.entry("pullRequestsRecent").or_default().push(f.pull_requests_recent);
+            if let Some(n) = f.pull_requests_recent {
+                cols.entry("pullRequestsRecent").or_default().push(n);
+            }
         }
     }
 

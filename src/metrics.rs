@@ -82,7 +82,14 @@ impl SoftwareMetrics {
             issues_open: forge_field(&self.forge, |f| f.issues_open),
             issues_closed: forge_field(&self.forge, |f| f.issues_closed),
             pull_requests_all_time: forge_field(&self.forge, |f| f.pull_requests_all_time),
-            pull_requests_recent: forge_field(&self.forge, |f| f.pull_requests_recent),
+            pull_requests_recent: match &self.forge {
+                ForgeResult::Unsupported => MaybeNull::Absent,
+                ForgeResult::Failed => MaybeNull::Null,
+                ForgeResult::Ok(f) => match f.pull_requests_recent {
+                    Some(n) => MaybeNull::Value(n),
+                    None => MaybeNull::Absent,
+                },
+            },
         }
     }
 }
