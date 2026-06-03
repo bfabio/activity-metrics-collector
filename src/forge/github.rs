@@ -108,11 +108,14 @@ impl GitHub {
                 Ok(counts) => {
                     for (full, n) in counts {
                         if let Some(m) = out.get_mut(&full) {
-                            m.pull_requests_recent = n;
+                            m.pull_requests_recent = Some(n);
                         }
                     }
                 }
-                Err(e) => eprintln!("github graphql pr-recent batch failed: {e}"),
+                Err(e) => {
+                    eprintln!("github graphql pr-recent unavailable ({e}); pullRequestsRecent will be 0");
+                    break;
+                }
             }
         }
         out
@@ -157,7 +160,7 @@ impl GitHub {
                     issues_open: repo["openI"]["totalCount"].as_u64().unwrap_or(0),
                     issues_closed: repo["closedI"]["totalCount"].as_u64().unwrap_or(0),
                     pull_requests_all_time: repo["prAll"]["totalCount"].as_u64().unwrap_or(0),
-                    pull_requests_recent: 0,
+                    pull_requests_recent: None,
                 },
             );
         }
@@ -234,7 +237,7 @@ impl Forge for GitHub {
             issues_open: repo.open_issues_count,
             issues_closed: closed.total_count,
             pull_requests_all_time: pr_all.total_count,
-            pull_requests_recent: pr_recent.total_count,
+            pull_requests_recent: Some(pr_recent.total_count),
         })
     }
 }

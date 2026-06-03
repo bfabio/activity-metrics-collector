@@ -64,7 +64,7 @@ pub struct ForgeMetrics {
     pub issues_open: u64,
     pub issues_closed: u64,
     pub pull_requests_all_time: u64,
-    pub pull_requests_recent: u64,
+    pub pull_requests_recent: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

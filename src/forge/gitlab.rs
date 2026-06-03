@@ -111,7 +111,7 @@ impl Forge for GitLab {
             issues_open: stats.statistics.counts.opened,
             issues_closed: stats.statistics.counts.closed,
             pull_requests_all_time,
-            pull_requests_recent,
+            pull_requests_recent: Some(pull_requests_recent),
         })
     }
 }
