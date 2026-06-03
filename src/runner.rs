@@ -183,23 +183,32 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         by_catalog.entry(key).or_default().push(m);
     }
 
-    let root_id = if by_catalog.contains_key(&None) {
+    let root_id = if cfg.catalog.is_none() {
         api.resolve_root_catalog_id().await.ok()
     } else {
         None
     };
 
     for (cat, metrics) in &by_catalog {
+        let Some(id) = cat else { continue };
         let analysis = catalog_analysis(metrics, cfg.recent_days, OffsetDateTime::now_utc());
         let body = serde_json::json!({ "activity": analysis });
-        let id = match cat {
-            Some(c) => c.clone(),
-            None => root_id.clone().unwrap_or_else(|| "<root>".to_string()),
-        };
+        if cfg.dry_run {
+            println!("PATCH /catalogs/{}/analysis {}", id, body);
+        } else if let Err(e) = api.patch_catalog_analysis(id, &body).await {
+            eprintln!("patch catalog {id} failed: {e}");
+        }
+    }
+
+    if cfg.catalog.is_none() && processed > 0 {
+        let all: Vec<SoftwareMetrics> = by_catalog.values().flatten().cloned().collect();
+        let analysis = catalog_analysis(&all, cfg.recent_days, OffsetDateTime::now_utc());
+        let body = serde_json::json!({ "activity": analysis });
+        let id = root_id.unwrap_or_else(|| "\u{2205}".to_string());
         if cfg.dry_run {
             println!("PATCH /catalogs/{}/analysis {}", id, body);
         } else if let Err(e) = api.patch_catalog_analysis(&id, &body).await {
-            eprintln!("patch catalog {id} failed: {e}");
+            eprintln!("patch catalog {id} (root) failed: {e}");
         }
     }
 
