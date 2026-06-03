@@ -229,7 +229,7 @@ fn merge_caches(existing: Cache, fresh: Cache) -> Cache {
     for cache in [&existing, &fresh] {
         let mut cur = cache.first_entry;
         for e in &cache.entries {
-            cur = cur + Duration::days(e.delta as i64);
+            cur += Duration::days(e.delta as i64);
             let emails: Vec<String> = e
                 .authors
                 .iter()
