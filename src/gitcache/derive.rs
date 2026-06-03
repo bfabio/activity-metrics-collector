@@ -18,7 +18,7 @@ pub fn derive(cache: &Cache, now: Date, recent_days: u32) -> GitMetrics {
 
     let mut cur = cache.first_entry;
     for e in &cache.entries {
-        cur = cur + Duration::days(e.delta as i64);
+        cur += Duration::days(e.delta as i64);
         commits_all_time += e.commits as u64;
         if cur >= cutoff {
             commits_recent += e.commits as u64;
