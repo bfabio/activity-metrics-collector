@@ -201,7 +201,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
             Err(e) => {
                 eprintln!("warning: root catalog unavailable ({e}), writing per-catalog stats only (no global aggregate)");
                 eprintln!(
-                    "hint: create the root catalog to also get global stats:\n  curl -s -X POST {}/v1/catalogs \\\n    -H 'Content-Type: application/json' \\\n    -H 'Authorization: Bearer <token>' \\\n    -d '{{\"name\":\"Root\",\"alternativeId\":\"\u{2205}\"}}'",
+                    "hint: create the root catalog to also get global stats:\n  curl -s -X POST {}/catalogs \\\n    -H 'Content-Type: application/json' \\\n    -H 'Authorization: Bearer <token>' \\\n    -d '{{\"name\":\"Root\",\"alternativeId\":\"\u{2205}\"}}'",
                     cfg.api_base_url
                 );
                 None
