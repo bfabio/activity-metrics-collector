@@ -70,10 +70,7 @@ impl CatalogClient {
                 return Ok(c["id"].as_str().unwrap_or_default().to_string());
             }
         }
-        data.first()
-            .and_then(|c| c["id"].as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| anyhow!("no catalogs found"))
+        Err(anyhow!("no root catalog (alternativeId=∅) found"))
     }
 
     pub async fn patch_software_analysis(&self, id: &str, body: &Value) -> Result<()> {
