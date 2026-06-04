@@ -199,9 +199,9 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         let root_id = match api.resolve_root_catalog_id().await {
             Ok(id) => Some(id),
             Err(e) => {
-                eprintln!("warning: root catalog not found ({e}); global stats will be skipped");
+                eprintln!("warning: root catalog unavailable ({e}), writing per-catalog stats only (no global aggregate)");
                 eprintln!(
-                    "hint: create it with:\n  curl -s -X POST {}/v1/catalogs \\\n    -H 'Content-Type: application/json' \\\n    -H 'Authorization: Bearer <token>' \\\n    -d '{{\"name\":\"Root\",\"alternativeId\":\"\u{2205}\"}}'",
+                    "hint: create the root catalog to also get global stats:\n  curl -s -X POST {}/v1/catalogs \\\n    -H 'Content-Type: application/json' \\\n    -H 'Authorization: Bearer <token>' \\\n    -d '{{\"name\":\"Root\",\"alternativeId\":\"\u{2205}\"}}'",
                     cfg.api_base_url
                 );
                 None
