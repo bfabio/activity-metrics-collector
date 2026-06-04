@@ -21,7 +21,8 @@ pub async fn send_with_retry(req: reqwest::RequestBuilder, max_retries: u32) -> 
             .get("x-ratelimit-remaining")
             .and_then(|v| v.to_str().ok())
             == Some("0");
-        let rate_limited = status == 429 || (status == 403 && remaining_zero);
+        let has_retry_after = resp.headers().contains_key("retry-after");
+        let rate_limited = status == 429 || (status == 403 && (remaining_zero || has_retry_after));
 
         if !rate_limited || attempt >= max_retries {
             return Ok(resp);
