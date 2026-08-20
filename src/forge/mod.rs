@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use futures::stream::StreamExt;
 use std::time::Duration as StdDuration;
 use time::Date;
 
@@ -79,6 +80,9 @@ pub trait Forge: Send + Sync {
     async fn metrics(&self, full_name: &str, recent_cutoff: Date) -> Result<ForgeMetrics>;
 }
 
+/// Resolves the hosts the collector knows without asking them anything.
+/// `gitlab_hosts` short circuits the probe below, for an instance that
+/// refuses the version endpoint or is unreachable from where this runs.
 pub fn resolve_kind(host: &str, gitlab_hosts: &[String]) -> Option<ForgeKind> {
     if host == "github.com" {
         return Some(ForgeKind::GitHub);
@@ -87,4 +91,116 @@ pub fn resolve_kind(host: &str, gitlab_hosts: &[String]) -> Option<ForgeKind> {
         return Some(ForgeKind::GitLab);
     }
     None
+}
+
+/// GitLab answers /api/v4/version on every instance, with 401 when the
+/// caller is anonymous. Both the status and the JSON content type are
+/// required: a plain 404 page or a forge that returns JSON errors for
+/// unknown paths would otherwise pass.
+fn looks_like_gitlab(status: u16, content_type: Option<&str>) -> bool {
+    matches!(status, 200 | 401)
+        && content_type.is_some_and(|c| c.to_ascii_lowercase().contains("json"))
+}
+
+/// Some instances (gitlab.gnome.org among them) answer 406 to a request
+/// without a User-Agent, and reqwest sends none by default.
+fn probe_get(http: &reqwest::Client, url: String) -> reqwest::RequestBuilder {
+    http.get(url)
+        .header(reqwest::header::USER_AGENT, "activity-metrics-collector")
+        .timeout(StdDuration::from_secs(15))
+}
+
+async fn probe_gitlab(http: &reqwest::Client, host: &str) -> Option<ForgeKind> {
+    let resp = probe_get(http, format!("https://{host}/api/v4/version"))
+        .send()
+        .await
+        .ok()?;
+    let ct = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    looks_like_gitlab(resp.status().as_u16(), ct.as_deref()).then_some(ForgeKind::GitLab)
+}
+
+/// Classifies every host once, probing only the ones not already known.
+/// Self-hosted GitLab is the common case in a federated catalog and there
+/// is no list of instances to maintain anywhere, so asking the host is the
+/// only way to avoid silently dropping its metrics.
+pub async fn resolve_kinds<I>(
+    http: &reqwest::Client,
+    hosts: I,
+    gitlab_hosts: &[String],
+) -> std::collections::HashMap<String, ForgeKind>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut unknown: Vec<String> = Vec::new();
+    let mut known = std::collections::HashMap::new();
+
+    for host in hosts {
+        if known.contains_key(&host) || unknown.contains(&host) {
+            continue;
+        }
+        match resolve_kind(&host, gitlab_hosts) {
+            Some(kind) => {
+                known.insert(host, kind);
+            }
+            None => unknown.push(host),
+        }
+    }
+
+    let probed = futures::stream::iter(unknown.into_iter().map(|host| async move {
+        let kind = probe_gitlab(http, &host).await;
+        (host, kind)
+    }))
+    .buffer_unordered(8)
+    .collect::<Vec<_>>()
+    .await;
+
+    for (host, kind) in probed {
+        match kind {
+            Some(k) => {
+                eprintln!("detected forge: {host} is gitlab");
+                known.insert(host, k);
+            }
+            None => eprintln!("no forge api at {host}, git metrics only"),
+        }
+    }
+
+    known
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn known_hosts_need_no_probe() {
+        assert_eq!(resolve_kind("github.com", &[]), Some(ForgeKind::GitHub));
+        assert_eq!(resolve_kind("gitlab.com", &[]), Some(ForgeKind::GitLab));
+        assert_eq!(resolve_kind("example.com", &[]), None);
+    }
+
+    #[test]
+    fn configured_gitlab_host_overrides_the_probe() {
+        let hosts = vec!["gitlab.example.org".to_string()];
+        assert_eq!(
+            resolve_kind("gitlab.example.org", &hosts),
+            Some(ForgeKind::GitLab)
+        );
+    }
+
+    #[test]
+    fn anonymous_gitlab_answers_401_json() {
+        assert!(looks_like_gitlab(401, Some("application/json")));
+        assert!(looks_like_gitlab(200, Some("application/json; charset=utf-8")));
+    }
+
+    #[test]
+    fn a_json_404_is_not_a_gitlab() {
+        assert!(!looks_like_gitlab(404, Some("application/json")));
+        assert!(!looks_like_gitlab(401, Some("text/html")));
+        assert!(!looks_like_gitlab(401, None));
+    }
 }
