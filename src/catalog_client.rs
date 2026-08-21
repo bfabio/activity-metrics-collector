@@ -75,6 +75,15 @@ impl CatalogClient {
         Err(anyhow!("no root catalog (alternativeId=∅) found"))
     }
 
+    pub async fn get_software_analysis(&self, id: &str) -> Result<Value> {
+        let url = format!("{}/software/{}/analysis", self.base, id);
+        let resp = self.client.get(&url).bearer_auth(&self.token).send().await?;
+        if !resp.status().is_success() {
+            return Err(anyhow!("get {} returned {}", url, resp.status()));
+        }
+        Ok(resp.json::<Value>().await?)
+    }
+
     pub async fn patch_software_analysis(&self, id: &str, body: &Value) -> Result<()> {
         self.patch(&format!("{}/software/{}/analysis", self.base, id), body)
             .await

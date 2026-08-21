@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     config::load_dotenv();
     let cfg = config::Config::parse();
     let summary = runner::run(cfg).await?;
-    println!("processed={} failed={}", summary.processed, summary.failed);
+    println!("processed={} failed={} kept={}", summary.processed, summary.failed, summary.kept);
     println!("{}", summary.cache);
     Ok(())
 }

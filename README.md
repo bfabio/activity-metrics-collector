@@ -70,9 +70,13 @@ Per software it sends `PATCH /software/{id}/analysis` with an
 
 `tags` is the git tag count. The forge fields (`stars`, `forks`,
 `issuesOpen`, `issuesClosed`, `pullRequestsAllTime`,
-`pullRequestsRecent`) come from the forge API and are omitted when
-the forge is unsupported or its call fails. Pull requests count the
-forge PRs/MRs (`is:pr` on GitHub), not git merge commits.
+`pullRequestsRecent`) come from the forge API. They are omitted when
+the forge is unsupported and sent as `null` when its call fails. The
+API replaces the namespace on every PATCH, so when the call fails for
+a software whose stored analysis already holds a measured forge value
+the PATCH is skipped: the stored numbers stay, and their `t` keeps
+saying when they were last refreshed. Pull requests count the forge
+PRs/MRs (`is:pr` on GitHub), not git merge commits.
 
 Per catalog it sends `PATCH /catalogs/{id}/analysis` with per metric
 statistics over the catalog software:

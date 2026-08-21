@@ -21,7 +21,28 @@ use url::Url;
 pub struct Summary {
     pub processed: usize,
     pub failed: usize,
+    pub kept: usize,
     pub cache: CacheStats,
+}
+
+const FORGE_FIELDS: [&str; 6] = [
+    "stars",
+    "forks",
+    "issuesOpen",
+    "issuesClosed",
+    "pullRequestsAllTime",
+    "pullRequestsRecent",
+];
+
+/// Whether the stored activity namespace carries a measured forge
+/// value. The API replaces the namespace wholesale on PATCH, so a run
+/// whose forge fetch failed must not write over numbers a previous
+/// run measured: it skips the write and the stored `t` keeps saying
+/// when the row was last refreshed. A row with nothing measured yet
+/// is written, so a first scan still lands its git metrics and says
+/// the forge part failed.
+fn stored_forge_numbers(activity: &serde_json::Value) -> bool {
+    FORGE_FIELDS.iter().any(|f| activity[f].is_number())
 }
 
 struct Collector {
@@ -195,18 +216,34 @@ pub async fn run(cfg: Config) -> Result<Summary> {
 
     eprintln!("collecting metrics for {total} software (concurrency={})", cfg.concurrency);
     let done = AtomicUsize::new(0);
+    let kept = AtomicUsize::new(0);
 
     let collected: Vec<(Option<String>, SoftwareMetrics, CacheOutcome)> = stream::iter(software)
         .map(|sw| {
             let collector = &collector;
             let api = &api;
             let done = &done;
+            let kept = &kept;
             let dry_run = cfg.dry_run;
             async move {
                 let result = collector.collect(&sw).await;
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 match result {
                     Ok((m, outcome)) => {
+                        if m.forge == ForgeResult::Failed {
+                            let keep = match api.get_software_analysis(&sw.id).await {
+                                Ok(stored) => stored_forge_numbers(&stored["activity"]),
+                                Err(e) => {
+                                    eprintln!("[{n}/{total}] cannot read stored analysis of {}: {e}", sw.url);
+                                    true
+                                }
+                            };
+                            if keep {
+                                kept.fetch_add(1, Ordering::Relaxed);
+                                eprintln!("[{n}/{total}] forge fetch failed, keeping stored metrics of {}", sw.url);
+                                return Some((sw.catalog_id.clone(), m, outcome));
+                            }
+                        }
                         let body = serde_json::json!({ "activity": m.to_namespace() });
                         if dry_run {
                             println!("PATCH /software/{}/analysis {}", sw.id, body);
@@ -233,6 +270,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
 
     let processed = collected.len();
     let failed = total - processed;
+    let kept = kept.into_inner();
 
     let mut cache = CacheStats::default();
     let mut by_catalog: BTreeMap<Option<String>, Vec<SoftwareMetrics>> = BTreeMap::new();
@@ -284,6 +322,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     Ok(Summary {
         processed,
         failed,
+        kept,
         cache,
     })
 }
@@ -342,7 +381,7 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{declared_repo_url, forge_target, github_batch_result, human_bytes, CacheStats};
+    use super::{declared_repo_url, forge_target, github_batch_result, human_bytes, stored_forge_numbers, CacheStats};
     use crate::catalog_client::Software;
     use crate::forge::{ForgeMetrics, ForgeResult};
     use crate::gitcache::CacheOutcome;
@@ -453,6 +492,20 @@ mod tests {
             github_batch_result(Some(m)),
             ForgeResult::Ok(_)
         ));
+    }
+
+    #[test]
+    fn a_measured_forge_value_is_kept() {
+        assert!(stored_forge_numbers(&serde_json::json!({"stars": 12, "forks": null})));
+        assert!(stored_forge_numbers(&serde_json::json!({"pullRequestsRecent": 0})));
+    }
+
+    #[test]
+    fn nothing_measured_means_write() {
+        assert!(!stored_forge_numbers(&serde_json::json!({})));
+        assert!(!stored_forge_numbers(&serde_json::json!(null)));
+        assert!(!stored_forge_numbers(&serde_json::json!({"stars": null, "forks": null})));
+        assert!(!stored_forge_numbers(&serde_json::json!({"contributors": 5, "commitsAllTime": 40})));
     }
 
     #[test]
