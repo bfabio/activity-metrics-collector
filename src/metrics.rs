@@ -56,6 +56,8 @@ pub struct ActivityNamespace {
     pub pull_requests_all_time: MaybeNull<u64>,
     #[serde(rename = "pullRequestsRecent", skip_serializing_if = "MaybeNull::is_absent")]
     pub pull_requests_recent: MaybeNull<u64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<&'static str>,
 }
 
 fn forge_field(result: &ForgeResult, f: impl Fn(&ForgeMetrics) -> u64) -> MaybeNull<u64> {
@@ -66,9 +68,27 @@ fn forge_field(result: &ForgeResult, f: impl Fn(&ForgeMetrics) -> u64) -> MaybeN
     }
 }
 
+fn forge_opt_field(
+    result: &ForgeResult,
+    f: impl Fn(&ForgeMetrics) -> Option<u64>,
+) -> MaybeNull<u64> {
+    match result {
+        ForgeResult::Unsupported => MaybeNull::Absent,
+        ForgeResult::Failed => MaybeNull::Null,
+        ForgeResult::Ok(m) => match f(m) {
+            Some(n) => MaybeNull::Value(n),
+            None => MaybeNull::Absent,
+        },
+    }
+}
+
 impl SoftwareMetrics {
     pub fn to_namespace(&self) -> ActivityNamespace {
         let fmt = format_description!("[year]-[month]-[day]");
+        let disabled = match &self.forge {
+            ForgeResult::Ok(m) if m.issues_disabled => vec!["issues"],
+            _ => Vec::new(),
+        };
         ActivityNamespace {
             v: 1,
             contributors: self.git.contributors,
@@ -79,17 +99,11 @@ impl SoftwareMetrics {
             recent_days: self.recent_days,
             stars: forge_field(&self.forge, |f| f.stars),
             forks: forge_field(&self.forge, |f| f.forks),
-            issues_open: forge_field(&self.forge, |f| f.issues_open),
-            issues_closed: forge_field(&self.forge, |f| f.issues_closed),
+            issues_open: forge_opt_field(&self.forge, |f| f.issues_open),
+            issues_closed: forge_opt_field(&self.forge, |f| f.issues_closed),
             pull_requests_all_time: forge_field(&self.forge, |f| f.pull_requests_all_time),
-            pull_requests_recent: match &self.forge {
-                ForgeResult::Unsupported => MaybeNull::Absent,
-                ForgeResult::Failed => MaybeNull::Null,
-                ForgeResult::Ok(f) => match f.pull_requests_recent {
-                    Some(n) => MaybeNull::Value(n),
-                    None => MaybeNull::Absent,
-                },
-            },
+            pull_requests_recent: forge_opt_field(&self.forge, |f| f.pull_requests_recent),
+            disabled,
         }
     }
 }

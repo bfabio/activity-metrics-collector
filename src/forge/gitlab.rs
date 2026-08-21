@@ -54,6 +54,12 @@ impl GitLab {
 struct Project {
     star_count: u64,
     forks_count: u64,
+    #[serde(default = "default_access_level")]
+    issues_access_level: String,
+}
+
+fn default_access_level() -> String {
+    "enabled".to_string()
 }
 
 #[derive(serde::Deserialize)]
@@ -79,12 +85,21 @@ impl Forge for GitLab {
         let project: Project = self
             .get_json(&format!("{}/api/v4/projects/{}", self.base, encoded))
             .await?;
-        let stats: IssueStats = self
-            .get_json(&format!(
-                "{}/api/v4/projects/{}/issues_statistics",
-                self.base, encoded
-            ))
-            .await?;
+        let issues_disabled = project.issues_access_level == "disabled";
+        let (issues_open, issues_closed) = if issues_disabled {
+            (None, None)
+        } else {
+            let stats: IssueStats = self
+                .get_json(&format!(
+                    "{}/api/v4/projects/{}/issues_statistics",
+                    self.base, encoded
+                ))
+                .await?;
+            (
+                Some(stats.statistics.counts.opened),
+                Some(stats.statistics.counts.closed),
+            )
+        };
 
         let pull_requests_all_time = self
             .count(&format!(
@@ -108,10 +123,32 @@ impl Forge for GitLab {
         Ok(ForgeMetrics {
             stars: project.star_count,
             forks: project.forks_count,
-            issues_open: stats.statistics.counts.opened,
-            issues_closed: stats.statistics.counts.closed,
+            issues_open,
+            issues_closed,
+            issues_disabled,
             pull_requests_all_time,
             pull_requests_recent: Some(pull_requests_recent),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Project;
+
+    #[test]
+    fn project_without_access_level_defaults_to_enabled() {
+        let p: Project =
+            serde_json::from_str(r#"{"star_count":1,"forks_count":2}"#).unwrap();
+        assert_eq!(p.issues_access_level, "enabled");
+    }
+
+    #[test]
+    fn project_reports_disabled_issues() {
+        let p: Project = serde_json::from_str(
+            r#"{"star_count":1,"forks_count":2,"issues_access_level":"disabled"}"#,
+        )
+        .unwrap();
+        assert_eq!(p.issues_access_level, "disabled");
     }
 }

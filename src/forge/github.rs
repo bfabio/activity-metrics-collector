@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use time::Date;
 
 const FORGE_FRAGMENT: &str = "fragment S on Repository { \
-    stargazerCount forkCount \
+    stargazerCount forkCount hasIssuesEnabled \
     openI: issues(states: OPEN) { totalCount } \
     closedI: issues(states: CLOSED) { totalCount } \
     prAll: pullRequests { totalCount } }";
@@ -23,6 +23,18 @@ const SEARCH_CHUNK: usize = 20;
 
 fn iso_date(d: Date) -> String {
     format!("{:04}-{:02}-{:02}", d.year(), u8::from(d.month()), d.day())
+}
+
+// An absent flag means an older GHES schema: assume the tracker is
+// on rather than silently dropping the metrics.
+fn issue_counts(repo: &Value) -> (Option<u64>, Option<u64>, bool) {
+    let flag = repo["hasIssuesEnabled"].as_bool();
+    let enabled = flag.unwrap_or(true);
+    (
+        enabled.then(|| repo["openI"]["totalCount"].as_u64().unwrap_or(0)),
+        enabled.then(|| repo["closedI"]["totalCount"].as_u64().unwrap_or(0)),
+        flag == Some(false),
+    )
 }
 
 pub struct GitHub {
@@ -152,13 +164,15 @@ impl GitHub {
             if repo.is_null() {
                 continue;
             }
+            let (issues_open, issues_closed, issues_disabled) = issue_counts(repo);
             out.insert(
                 full.clone(),
                 ForgeMetrics {
                     stars: repo["stargazerCount"].as_u64().unwrap_or(0),
                     forks: repo["forkCount"].as_u64().unwrap_or(0),
-                    issues_open: repo["openI"]["totalCount"].as_u64().unwrap_or(0),
-                    issues_closed: repo["closedI"]["totalCount"].as_u64().unwrap_or(0),
+                    issues_open,
+                    issues_closed,
+                    issues_disabled,
                     pull_requests_all_time: repo["prAll"]["totalCount"].as_u64().unwrap_or(0),
                     pull_requests_recent: None,
                 },
@@ -192,6 +206,12 @@ struct Repo {
     stargazers_count: u64,
     forks_count: u64,
     open_issues_count: u64,
+    #[serde(default = "default_true")]
+    has_issues: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(serde::Deserialize)]
@@ -207,13 +227,18 @@ impl Forge for GitHub {
             .get_json(&format!("{}/repos/{}", self.base, full_name), &[])
             .await?;
 
-        let closed_q = format!("repo:{full_name} type:issue state:closed");
-        let closed: Search = self
-            .get_json(
-                &format!("{}/search/issues", self.base),
-                &[("q", closed_q.as_str()), ("per_page", "1")],
-            )
-            .await?;
+        let (issues_open, issues_closed) = if repo.has_issues {
+            let closed_q = format!("repo:{full_name} type:issue state:closed");
+            let closed: Search = self
+                .get_json(
+                    &format!("{}/search/issues", self.base),
+                    &[("q", closed_q.as_str()), ("per_page", "1")],
+                )
+                .await?;
+            (Some(repo.open_issues_count), Some(closed.total_count))
+        } else {
+            (None, None)
+        };
 
         let pr_q = format!("repo:{full_name} type:pr");
         let pr_all: Search = self
@@ -234,10 +259,46 @@ impl Forge for GitHub {
         Ok(ForgeMetrics {
             stars: repo.stargazers_count,
             forks: repo.forks_count,
-            issues_open: repo.open_issues_count,
-            issues_closed: closed.total_count,
+            issues_open,
+            issues_closed,
+            issues_disabled: !repo.has_issues,
             pull_requests_all_time: pr_all.total_count,
             pull_requests_recent: Some(pr_recent.total_count),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::issue_counts;
+    use serde_json::json;
+
+    #[test]
+    fn issue_counts_read_the_totals_when_the_tracker_is_on() {
+        let repo = json!({
+            "hasIssuesEnabled": true,
+            "openI": { "totalCount": 5 },
+            "closedI": { "totalCount": 140 }
+        });
+        assert_eq!(issue_counts(&repo), (Some(5), Some(140), false));
+    }
+
+    #[test]
+    fn issue_counts_are_none_when_the_tracker_is_off() {
+        let repo = json!({
+            "hasIssuesEnabled": false,
+            "openI": { "totalCount": 0 },
+            "closedI": { "totalCount": 0 }
+        });
+        assert_eq!(issue_counts(&repo), (None, None, true));
+    }
+
+    #[test]
+    fn issue_counts_default_to_on_when_the_flag_is_missing() {
+        let repo = json!({
+            "openI": { "totalCount": 2 },
+            "closedI": { "totalCount": 3 }
+        });
+        assert_eq!(issue_counts(&repo), (Some(2), Some(3), false));
     }
 }

@@ -443,8 +443,9 @@ mod tests {
         let m = ForgeMetrics {
             stars: 1,
             forks: 0,
-            issues_open: 0,
-            issues_closed: 0,
+            issues_open: Some(0),
+            issues_closed: Some(0),
+            issues_disabled: false,
             pull_requests_all_time: 0,
             pull_requests_recent: None,
         };

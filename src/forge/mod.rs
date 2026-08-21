@@ -64,8 +64,9 @@ pub enum ForgeResult {
 pub struct ForgeMetrics {
     pub stars: u64,
     pub forks: u64,
-    pub issues_open: u64,
-    pub issues_closed: u64,
+    pub issues_open: Option<u64>,
+    pub issues_closed: Option<u64>,
+    pub issues_disabled: bool,
     pub pull_requests_all_time: u64,
     pub pull_requests_recent: Option<u64>,
 }
