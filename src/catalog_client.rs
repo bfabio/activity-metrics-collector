@@ -10,6 +10,8 @@ pub struct Software {
     pub url: String,
     #[serde(rename = "catalogId")]
     pub catalog_id: Option<String>,
+    #[serde(rename = "publiccodeYml", default)]
+    pub publiccode_yml: Option<String>,
 }
 
 pub struct CatalogClient {

@@ -44,6 +44,45 @@ fn parse_repo(raw: &str) -> Option<(String, String)> {
     Some((host, full_name))
 }
 
+/// opencode.de carries synced mirrors of projects developed elsewhere.
+/// The clone is identical, so git history is right either way, but the
+/// mirror's own star and fork counts sit near zero while the upstream
+/// repository has thousands: OpenProject reads 1 there against 15897 on
+/// github. Only the forge side follows the home publiccode.yml declares.
+const MIRROR_HOSTS: [&str; 1] = ["gitlab.opencode.de"];
+
+/// The repository url at the root of publiccode.yml. Only column zero
+/// counts: the nested url keys under legal, maintenance and the rest
+/// point at licences and contacts, not at the code.
+fn declared_repo_url(yml: &str) -> Option<String> {
+    yml.lines()
+        .find_map(|line| line.strip_prefix("url:"))
+        .map(|v| v.trim().trim_matches(['"', '\'']).to_string())
+        .filter(|v| !v.is_empty())
+}
+
+/// Where forge metrics come from, which is the crawled repository for
+/// everything except a mirror host declaring a home on another forge.
+fn forge_target(sw: &Software) -> Option<(String, String)> {
+    let (host, full_name) = parse_repo(&sw.url)?;
+    if !MIRROR_HOSTS.contains(&host.as_str()) {
+        return Some((host, full_name));
+    }
+    match sw
+        .publiccode_yml
+        .as_deref()
+        .and_then(declared_repo_url)
+        .and_then(|d| parse_repo(&d))
+    {
+        // Some entries declare a project homepage rather than a
+        // repository. An owner/name path is the cheap way to tell the
+        // two apart, and following a homepage would lose the metrics
+        // the mirror does have.
+        Some((dh, dn)) if dh != host && dn.contains('/') => Some((dh, dn)),
+        _ => Some((host, full_name)),
+    }
+}
+
 impl Collector {
     fn forge_for(&self, host: &str) -> Option<Box<dyn Forge>> {
         match self.forge_kinds.get(host).copied()? {
@@ -62,6 +101,7 @@ impl Collector {
 
     async fn collect(&self, sw: &Software) -> Result<(SoftwareMetrics, CacheOutcome)> {
         let (host, full_name) = parse_repo(&sw.url).ok_or_else(|| anyhow!("bad url {}", sw.url))?;
+        let (forge_host, forge_name) = forge_target(sw).unwrap_or((host.clone(), full_name.clone()));
 
         let path = cache_path(&self.cache_root, &host, &full_name);
         let (cache, outcome) = read_or_build(&path, &sw.url)?;
@@ -69,13 +109,13 @@ impl Collector {
         let git = derive(&cache, now, self.cfg.recent_days);
         let recent_cutoff = now - Duration::days(self.cfg.recent_days as i64);
 
-        let forge = match self.forge_kinds.get(&host).copied() {
-            Some(ForgeKind::GitHub) => match self.github_metrics.get(&full_name).cloned() {
+        let forge = match self.forge_kinds.get(&forge_host).copied() {
+            Some(ForgeKind::GitHub) => match self.github_metrics.get(&forge_name).cloned() {
                 Some(m) => ForgeResult::Ok(m),
                 None => ForgeResult::Unsupported,
             },
-            Some(ForgeKind::GitLab) => match self.forge_for(&host) {
-                Some(f) => match f.metrics(&full_name, recent_cutoff).await {
+            Some(ForgeKind::GitLab) => match self.forge_for(&forge_host) {
+                Some(f) => match f.metrics(&forge_name, recent_cutoff).await {
                     Ok(m) => ForgeResult::Ok(m),
                     Err(_) => ForgeResult::Failed,
                 },
@@ -105,14 +145,14 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     let http = Client::new();
     let forge_kinds = resolve_kinds(
         &http,
-        software.iter().filter_map(|sw| parse_repo(&sw.url)).map(|(h, _)| h),
+        software.iter().filter_map(forge_target).map(|(h, _)| h),
         &cfg.gitlab_hosts,
     )
     .await;
 
     let github_repos: Vec<String> = software
         .iter()
-        .filter_map(|sw| parse_repo(&sw.url))
+        .filter_map(forge_target)
         .filter(|(host, _)| forge_kinds.get(host) == Some(&ForgeKind::GitHub))
         .map(|(_, full_name)| full_name)
         .collect();
@@ -290,8 +330,92 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{human_bytes, CacheStats};
+    use super::{declared_repo_url, forge_target, human_bytes, CacheStats};
+    use crate::catalog_client::Software;
     use crate::gitcache::CacheOutcome;
+
+    fn sw(url: &str, yml: Option<&str>) -> Software {
+        Software {
+            id: "x".into(),
+            url: url.into(),
+            catalog_id: None,
+            publiccode_yml: yml.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn declared_url_reads_only_the_root_key() {
+        let yml = "name: Thing\nurl: https://github.com/org/repo\nlegal:\n  url: https://example.org/licence\n";
+        assert_eq!(
+            declared_repo_url(yml).as_deref(),
+            Some("https://github.com/org/repo")
+        );
+    }
+
+    #[test]
+    fn declared_url_absent_or_empty_is_none() {
+        assert_eq!(declared_repo_url("name: Thing\n"), None);
+        assert_eq!(declared_repo_url("url:   \n"), None);
+    }
+
+    #[test]
+    fn mirror_follows_the_declared_home() {
+        let s = sw(
+            "https://gitlab.opencode.de/org/mirror.git",
+            Some("url: https://github.com/opf/openproject\n"),
+        );
+        assert_eq!(
+            forge_target(&s),
+            Some(("github.com".into(), "opf/openproject".into()))
+        );
+    }
+
+    #[test]
+    fn mirror_declaring_its_own_host_stays_put() {
+        let s = sw(
+            "https://gitlab.opencode.de/org/thing.git",
+            Some("url: https://gitlab.opencode.de/org/thing\n"),
+        );
+        assert_eq!(
+            forge_target(&s),
+            Some(("gitlab.opencode.de".into(), "org/thing".into()))
+        );
+    }
+
+    #[test]
+    fn mirror_without_publiccode_stays_put() {
+        let s = sw("https://gitlab.opencode.de/org/thing.git", None);
+        assert_eq!(
+            forge_target(&s),
+            Some(("gitlab.opencode.de".into(), "org/thing".into()))
+        );
+    }
+
+    // Only the mirror host redirects: a github repo pointing its
+    // publiccode.yml elsewhere keeps its own metrics.
+    #[test]
+    fn a_declared_homepage_is_not_a_repository() {
+        let s = sw(
+            "https://gitlab.opencode.de/org/thing.git",
+            Some("url: https://www.digitale-doerfer.de\n"),
+        );
+        assert_eq!(
+            forge_target(&s),
+            Some(("gitlab.opencode.de".into(), "org/thing".into()))
+        );
+    }
+
+    #[test]
+    fn other_hosts_never_redirect() {
+        let s = sw(
+            "https://github.com/org/repo.git",
+            Some("url: https://gitlab.com/other/repo\n"),
+        );
+        assert_eq!(
+            forge_target(&s),
+            Some(("github.com".into(), "org/repo".into()))
+        );
+    }
 
     #[test]
     fn cache_stats_folds_outcomes() {
