@@ -123,17 +123,41 @@ fn probe_get(http: &reqwest::Client, url: String) -> reqwest::RequestBuilder {
         .timeout(StdDuration::from_secs(15))
 }
 
-async fn probe_gitlab(http: &reqwest::Client, host: &str) -> Option<ForgeKind> {
-    let resp = probe_get(http, format!("https://{host}/api/v4/version"))
+/// What one probe learned about a host. `Unreachable` covers a
+/// connection error, a timeout and a 5xx or 429 answer: the host may
+/// well be a forge, it did not get to say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Probe {
+    Is(ForgeKind),
+    IsNot,
+    Unreachable,
+}
+
+fn transient(status: u16) -> bool {
+    status >= 500 || status == 429
+}
+
+async fn probe_gitlab(http: &reqwest::Client, host: &str) -> Probe {
+    let Ok(resp) = probe_get(http, format!("https://{host}/api/v4/version"))
         .send()
         .await
-        .ok()?;
+    else {
+        return Probe::Unreachable;
+    };
+    let status = resp.status().as_u16();
+    if transient(status) {
+        return Probe::Unreachable;
+    }
     let ct = resp
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    looks_like_gitlab(resp.status().as_u16(), ct.as_deref()).then_some(ForgeKind::GitLab)
+    if looks_like_gitlab(status, ct.as_deref()) {
+        Probe::Is(ForgeKind::GitLab)
+    } else {
+        Probe::IsNot
+    }
 }
 
 /// Gitea and Forgejo both serve their OpenAPI document at /swagger.v1.json
@@ -159,28 +183,67 @@ async fn body_prefix(mut resp: reqwest::Response, max: usize) -> String {
     String::from_utf8_lossy(&buf).into_owned()
 }
 
-async fn probe_gitea(http: &reqwest::Client, host: &str) -> Option<ForgeKind> {
-    let resp = http
-        .get(format!("https://{host}/swagger.v1.json"))
+async fn probe_gitea(http: &reqwest::Client, host: &str) -> Probe {
+    let Ok(resp) = probe_get(http, format!("https://{host}/swagger.v1.json"))
         .header(
             reqwest::header::RANGE,
             format!("bytes=0-{}", SWAGGER_PREFIX - 1),
         )
-        .timeout(StdDuration::from_secs(15))
         .send()
         .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
+    else {
+        return Probe::Unreachable;
+    };
+    let status = resp.status().as_u16();
+    if transient(status) {
+        return Probe::Unreachable;
     }
-    looks_like_gitea(&body_prefix(resp, SWAGGER_PREFIX).await).then_some(ForgeKind::Gitea)
+    if !resp.status().is_success() {
+        return Probe::IsNot;
+    }
+    if looks_like_gitea(&body_prefix(resp, SWAGGER_PREFIX).await) {
+        Probe::Is(ForgeKind::Gitea)
+    } else {
+        Probe::IsNot
+    }
 }
 
-async fn probe(http: &reqwest::Client, host: &str) -> Option<ForgeKind> {
-    if let Some(k) = probe_gitlab(http, host).await {
-        return Some(k);
+/// A match on either probe settles the host. Short of that, one probe
+/// that never got an answer leaves the host unreachable rather than
+/// "not a forge": the difference decides whether stored metrics are
+/// kept or erased downstream.
+fn classify(gitlab: Probe, gitea: Probe) -> Probe {
+    match (gitlab, gitea) {
+        (Probe::Is(k), _) | (_, Probe::Is(k)) => Probe::Is(k),
+        (Probe::Unreachable, _) | (_, Probe::Unreachable) => Probe::Unreachable,
+        _ => Probe::IsNot,
     }
-    probe_gitea(http, host).await
+}
+
+async fn probe(http: &reqwest::Client, host: &str) -> Probe {
+    let gitlab = probe_gitlab(http, host).await;
+    if let Probe::Is(k) = gitlab {
+        return Probe::Is(k);
+    }
+    classify(gitlab, probe_gitea(http, host).await)
+}
+
+/// The forge behind every host of a run, plus the hosts that gave no
+/// answer when probed.
+#[derive(Debug, Default)]
+pub struct ForgeHosts {
+    kinds: std::collections::HashMap<String, ForgeKind>,
+    unreachable: std::collections::HashSet<String>,
+}
+
+impl ForgeHosts {
+    pub fn kind(&self, host: &str) -> Option<ForgeKind> {
+        self.kinds.get(host).copied()
+    }
+
+    pub fn is_unreachable(&self, host: &str) -> bool {
+        self.unreachable.contains(host)
+    }
 }
 
 /// Classifies every host once, probing only the ones not already known.
@@ -188,48 +251,48 @@ async fn probe(http: &reqwest::Client, host: &str) -> Option<ForgeKind> {
 /// federated catalog and there is no list of instances to maintain
 /// anywhere, so asking the host is the only way to avoid silently
 /// dropping its metrics.
-pub async fn resolve_kinds<I>(
-    http: &reqwest::Client,
-    hosts: I,
-    gitlab_hosts: &[String],
-) -> std::collections::HashMap<String, ForgeKind>
+pub async fn resolve_kinds<I>(http: &reqwest::Client, hosts: I, gitlab_hosts: &[String]) -> ForgeHosts
 where
     I: IntoIterator<Item = String>,
 {
     let mut unknown: Vec<String> = Vec::new();
-    let mut known = std::collections::HashMap::new();
+    let mut out = ForgeHosts::default();
 
     for host in hosts {
-        if known.contains_key(&host) || unknown.contains(&host) {
+        if out.kinds.contains_key(&host) || unknown.contains(&host) {
             continue;
         }
         match resolve_kind(&host, gitlab_hosts) {
             Some(kind) => {
-                known.insert(host, kind);
+                out.kinds.insert(host, kind);
             }
             None => unknown.push(host),
         }
     }
 
     let probed = futures::stream::iter(unknown.into_iter().map(|host| async move {
-        let kind = probe(http, &host).await;
-        (host, kind)
+        let outcome = probe(http, &host).await;
+        (host, outcome)
     }))
     .buffer_unordered(8)
     .collect::<Vec<_>>()
     .await;
 
-    for (host, kind) in probed {
-        match kind {
-            Some(k) => {
+    for (host, outcome) in probed {
+        match outcome {
+            Probe::Is(k) => {
                 eprintln!("detected forge: {host} speaks the {} api", k.label());
-                known.insert(host, k);
+                out.kinds.insert(host, k);
             }
-            None => eprintln!("no forge api at {host}, git metrics only"),
+            Probe::IsNot => eprintln!("no forge api at {host}, git metrics only"),
+            Probe::Unreachable => {
+                eprintln!("no answer from {host}, forge metrics count as failed");
+                out.unreachable.insert(host);
+            }
         }
     }
 
-    known
+    out
 }
 
 #[cfg(test)]
@@ -281,5 +344,32 @@ mod tests {
         assert!(!looks_like_gitea(r#"{"info": {"title": "Some API"}}"#));
         assert!(!looks_like_gitea("<html>not found</html>"));
         assert!(!looks_like_gitea(""));
+    }
+
+    #[test]
+    fn a_match_on_either_probe_wins() {
+        assert_eq!(classify(Probe::Is(ForgeKind::GitLab), Probe::Unreachable), Probe::Is(ForgeKind::GitLab));
+        assert_eq!(classify(Probe::Unreachable, Probe::Is(ForgeKind::Gitea)), Probe::Is(ForgeKind::Gitea));
+    }
+
+    #[test]
+    fn no_answer_from_one_probe_keeps_the_host_unreachable() {
+        assert_eq!(classify(Probe::Unreachable, Probe::IsNot), Probe::Unreachable);
+        assert_eq!(classify(Probe::IsNot, Probe::Unreachable), Probe::Unreachable);
+        assert_eq!(classify(Probe::Unreachable, Probe::Unreachable), Probe::Unreachable);
+    }
+
+    #[test]
+    fn two_definite_misses_mean_no_forge() {
+        assert_eq!(classify(Probe::IsNot, Probe::IsNot), Probe::IsNot);
+    }
+
+    #[test]
+    fn server_errors_and_throttling_are_transient() {
+        assert!(transient(500));
+        assert!(transient(503));
+        assert!(transient(429));
+        assert!(!transient(404));
+        assert!(!transient(401));
     }
 }

@@ -1,7 +1,7 @@
 use crate::aggregate::catalog_analysis;
 use crate::catalog_client::{CatalogClient, Software};
 use crate::config::Config;
-use crate::forge::{gitea::Gitea, github::GitHub, gitlab::GitLab, resolve_kinds, Forge, ForgeKind, ForgeMetrics, ForgeResult};
+use crate::forge::{gitea::Gitea, github::GitHub, gitlab::GitLab, resolve_kinds, Forge, ForgeHosts, ForgeKind, ForgeMetrics, ForgeResult};
 use crate::gitcache::{
     build::read_or_build,
     derive::derive,
@@ -28,7 +28,7 @@ struct Collector {
     cfg: Config,
     http: Client,
     github_metrics: HashMap<String, ForgeMetrics>,
-    forge_kinds: HashMap<String, ForgeKind>,
+    forge_hosts: ForgeHosts,
     cache_root: PathBuf,
 }
 
@@ -83,9 +83,20 @@ fn forge_target(sw: &Software) -> Option<(String, String)> {
     }
 }
 
+// A miss in the GitHub batch is a fetch failure (missing token,
+// failed chunk, renamed repo), not an unsupported forge. The API
+// replaces the activity namespace wholesale, so absent fields would
+// erase the stored metrics.
+fn github_batch_result(metrics: Option<ForgeMetrics>) -> ForgeResult {
+    match metrics {
+        Some(m) => ForgeResult::Ok(m),
+        None => ForgeResult::Failed,
+    }
+}
+
 impl Collector {
     fn forge_for(&self, host: &str) -> Option<Box<dyn Forge>> {
-        match self.forge_kinds.get(host).copied()? {
+        match self.forge_hosts.kind(host)? {
             ForgeKind::GitHub => Some(Box::new(GitHub::new(
                 self.http.clone(),
                 "https://api.github.com".into(),
@@ -110,11 +121,10 @@ impl Collector {
         let git = derive(&cache, now, self.cfg.recent_days);
         let recent_cutoff = now - Duration::days(self.cfg.recent_days as i64);
 
-        let forge = match self.forge_kinds.get(&forge_host).copied() {
-            Some(ForgeKind::GitHub) => match self.github_metrics.get(&forge_name).cloned() {
-                Some(m) => ForgeResult::Ok(m),
-                None => ForgeResult::Unsupported,
-            },
+        let forge = match self.forge_hosts.kind(&forge_host) {
+            Some(ForgeKind::GitHub) => {
+                github_batch_result(self.github_metrics.get(&forge_name).cloned())
+            }
             Some(ForgeKind::GitLab | ForgeKind::Gitea) => match self.forge_for(&forge_host) {
                 Some(f) => match f.metrics(&forge_name, recent_cutoff).await {
                     Ok(m) => ForgeResult::Ok(m),
@@ -122,6 +132,7 @@ impl Collector {
                 },
                 None => ForgeResult::Unsupported,
             },
+            None if self.forge_hosts.is_unreachable(&forge_host) => ForgeResult::Failed,
             None => ForgeResult::Unsupported,
         };
 
@@ -144,7 +155,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     let total = software.len();
 
     let http = Client::new();
-    let forge_kinds = resolve_kinds(
+    let forge_hosts = resolve_kinds(
         &http,
         software.iter().filter_map(forge_target).map(|(h, _)| h),
         &cfg.gitlab_hosts,
@@ -154,7 +165,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     let github_repos: Vec<String> = software
         .iter()
         .filter_map(forge_target)
-        .filter(|(host, _)| forge_kinds.get(host) == Some(&ForgeKind::GitHub))
+        .filter(|(host, _)| forge_hosts.kind(host) == Some(ForgeKind::GitHub))
         .map(|(_, full_name)| full_name)
         .collect();
 
@@ -178,7 +189,7 @@ pub async fn run(cfg: Config) -> Result<Summary> {
         cfg: cfg.clone(),
         http,
         github_metrics,
-        forge_kinds,
+        forge_hosts,
         cache_root: cache_root(),
     };
 
@@ -331,8 +342,9 @@ fn human_bytes(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{declared_repo_url, forge_target, human_bytes, CacheStats};
+    use super::{declared_repo_url, forge_target, github_batch_result, human_bytes, CacheStats};
     use crate::catalog_client::Software;
+    use crate::forge::{ForgeMetrics, ForgeResult};
     use crate::gitcache::CacheOutcome;
 
     fn sw(url: &str, yml: Option<&str>) -> Software {
@@ -416,6 +428,30 @@ mod tests {
             forge_target(&s),
             Some(("github.com".into(), "org/repo".into()))
         );
+    }
+
+    #[test]
+    fn github_batch_miss_is_a_failure_not_unsupported() {
+        // Absent fields wipe the stored metrics on the API side, so a
+        // repo that fell out of the batch (no token, chunk error,
+        // renamed) must serialize as null, never as absent.
+        assert!(matches!(github_batch_result(None), ForgeResult::Failed));
+    }
+
+    #[test]
+    fn github_batch_hit_passes_through() {
+        let m = ForgeMetrics {
+            stars: 1,
+            forks: 0,
+            issues_open: 0,
+            issues_closed: 0,
+            pull_requests_all_time: 0,
+            pull_requests_recent: None,
+        };
+        assert!(matches!(
+            github_batch_result(Some(m)),
+            ForgeResult::Ok(_)
+        ));
     }
 
     #[test]
