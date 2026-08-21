@@ -1,7 +1,7 @@
 use crate::aggregate::catalog_analysis;
 use crate::catalog_client::{CatalogClient, Software};
 use crate::config::Config;
-use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kinds, Forge, ForgeKind, ForgeMetrics, ForgeResult};
+use crate::forge::{gitea::Gitea, github::GitHub, gitlab::GitLab, resolve_kinds, Forge, ForgeKind, ForgeMetrics, ForgeResult};
 use crate::gitcache::{
     build::read_or_build,
     derive::derive,
@@ -96,6 +96,7 @@ impl Collector {
                 format!("https://{host}"),
                 self.cfg.gitlab_token.clone(),
             ))),
+            ForgeKind::Gitea => Some(Box::new(Gitea::new(self.http.clone(), format!("https://{host}")))),
         }
     }
 
@@ -114,7 +115,7 @@ impl Collector {
                 Some(m) => ForgeResult::Ok(m),
                 None => ForgeResult::Unsupported,
             },
-            Some(ForgeKind::GitLab) => match self.forge_for(&forge_host) {
+            Some(ForgeKind::GitLab | ForgeKind::Gitea) => match self.forge_for(&forge_host) {
                 Some(f) => match f.metrics(&forge_name, recent_cutoff).await {
                     Ok(m) => ForgeResult::Ok(m),
                     Err(_) => ForgeResult::Failed,
