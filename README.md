@@ -5,7 +5,9 @@ Collects repository activity metrics of a catalog and writes them to the
 
 Metrics come from two sources: the git history (contributors,
 commits, tags, repository age) and the forge API (stars, forks,
-open and closed issues, pull requests) for GitHub and GitLab.
+open and closed issues, pull requests) for GitHub, GitLab, Gitea and
+Forgejo. Self-hosted GitLab, Gitea and Forgejo instances are detected
+by probing each host once.
 The git history is read from a blobless bare clone made in a temp
 dir. Only a compact binary summary is kept under `$XDG_CACHE_HOME`
 or `~/.cache`.
@@ -25,7 +27,8 @@ working directory:
 - `SOFTWARE_CATALOG_API_BEARER_TOKEN` token with write access to the `analysis` field
 - `GITHUB_TOKEN` token for the GitHub GraphQL API
 - `GITLAB_TOKEN` token for the GitLab API
-- `GITLAB_HOSTS` comma separated self-hosted GitLab hosts
+- `GITLAB_HOSTS` comma separated self-hosted GitLab hosts, for an
+  instance the probe cannot reach
 
 ## Run
 
