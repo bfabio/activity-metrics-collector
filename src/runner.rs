@@ -1,7 +1,7 @@
 use crate::aggregate::catalog_analysis;
 use crate::catalog_client::{CatalogClient, Software};
 use crate::config::Config;
-use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kind, Forge, ForgeKind, ForgeMetrics, ForgeResult};
+use crate::forge::{github::GitHub, gitlab::GitLab, resolve_kinds, Forge, ForgeKind, ForgeMetrics, ForgeResult};
 use crate::gitcache::{
     build::read_or_build,
     derive::derive,
@@ -28,6 +28,7 @@ struct Collector {
     cfg: Config,
     http: Client,
     github_metrics: HashMap<String, ForgeMetrics>,
+    forge_kinds: HashMap<String, ForgeKind>,
     cache_root: PathBuf,
 }
 
@@ -45,7 +46,7 @@ fn parse_repo(raw: &str) -> Option<(String, String)> {
 
 impl Collector {
     fn forge_for(&self, host: &str) -> Option<Box<dyn Forge>> {
-        match resolve_kind(host, &self.cfg.gitlab_hosts)? {
+        match self.forge_kinds.get(host).copied()? {
             ForgeKind::GitHub => Some(Box::new(GitHub::new(
                 self.http.clone(),
                 "https://api.github.com".into(),
@@ -68,7 +69,7 @@ impl Collector {
         let git = derive(&cache, now, self.cfg.recent_days);
         let recent_cutoff = now - Duration::days(self.cfg.recent_days as i64);
 
-        let forge = match resolve_kind(&host, &self.cfg.gitlab_hosts) {
+        let forge = match self.forge_kinds.get(&host).copied() {
             Some(ForgeKind::GitHub) => match self.github_metrics.get(&full_name).cloned() {
                 Some(m) => ForgeResult::Ok(m),
                 None => ForgeResult::Unsupported,
@@ -101,10 +102,18 @@ pub async fn run(cfg: Config) -> Result<Summary> {
     let software = api.list_software(cfg.catalog.as_deref()).await?;
     let total = software.len();
 
+    let http = Client::new();
+    let forge_kinds = resolve_kinds(
+        &http,
+        software.iter().filter_map(|sw| parse_repo(&sw.url)).map(|(h, _)| h),
+        &cfg.gitlab_hosts,
+    )
+    .await;
+
     let github_repos: Vec<String> = software
         .iter()
         .filter_map(|sw| parse_repo(&sw.url))
-        .filter(|(host, _)| resolve_kind(host, &cfg.gitlab_hosts) == Some(ForgeKind::GitHub))
+        .filter(|(host, _)| forge_kinds.get(host) == Some(&ForgeKind::GitHub))
         .map(|(_, full_name)| full_name)
         .collect();
 
@@ -126,8 +135,9 @@ pub async fn run(cfg: Config) -> Result<Summary> {
 
     let collector = Collector {
         cfg: cfg.clone(),
-        http: Client::new(),
+        http,
         github_metrics,
+        forge_kinds,
         cache_root: cache_root(),
     };
 
