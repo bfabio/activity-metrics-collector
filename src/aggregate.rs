@@ -73,8 +73,12 @@ pub fn catalog_analysis(
         if let ForgeResult::Ok(f) = &m.forge {
             cols.entry("stars").or_default().push(f.stars);
             cols.entry("forks").or_default().push(f.forks);
-            cols.entry("issuesOpen").or_default().push(f.issues_open);
-            cols.entry("issuesClosed").or_default().push(f.issues_closed);
+            if let Some(n) = f.issues_open {
+                cols.entry("issuesOpen").or_default().push(n);
+            }
+            if let Some(n) = f.issues_closed {
+                cols.entry("issuesClosed").or_default().push(n);
+            }
             cols.entry("pullRequestsAllTime").or_default().push(f.pull_requests_all_time);
             if let Some(n) = f.pull_requests_recent {
                 cols.entry("pullRequestsRecent").or_default().push(n);

@@ -79,6 +79,7 @@ struct Repo {
     stars_count: u64,
     forks_count: u64,
     open_issues_count: u64,
+    has_issues: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -92,12 +93,18 @@ impl Forge for Gitea {
         let repo: Repo = self
             .get_json(&format!("{}/api/v1/repos/{}", self.base, full_name))
             .await?;
-        let issues_closed = self
-            .count(&format!(
-                "{}/api/v1/repos/{}/issues?state=closed&type=issues&limit=1",
-                self.base, full_name
-            ))
-            .await?;
+        let issues_disabled = !repo.has_issues;
+        let (issues_open, issues_closed) = if issues_disabled {
+            (None, None)
+        } else {
+            let closed = self
+                .count(&format!(
+                    "{}/api/v1/repos/{}/issues?state=closed&type=issues&limit=1",
+                    self.base, full_name
+                ))
+                .await?;
+            (Some(repo.open_issues_count), Some(closed))
+        };
         let pull_requests_all_time = self
             .count(&format!(
                 "{}/api/v1/repos/{}/issues?type=pulls&state=all&limit=1",
@@ -115,8 +122,9 @@ impl Forge for Gitea {
         Ok(ForgeMetrics {
             stars: repo.stars_count,
             forks: repo.forks_count,
-            issues_open: repo.open_issues_count,
+            issues_open,
             issues_closed,
+            issues_disabled,
             pull_requests_all_time,
             pull_requests_recent: Some(pull_requests_recent),
         })
